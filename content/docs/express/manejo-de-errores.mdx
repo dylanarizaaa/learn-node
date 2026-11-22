@@ -1,0 +1,104 @@
+---
+title: Manejo de errores en Express
+description: El middleware de errores de cuatro argumentos, errores async en Express 5, respuestas de error consistentes y qué registrar.
+difficulty: intermedio
+time: 15
+prerequisites:
+  - express/validacion-con-zod
+  - javascript/errores-y-excepciones
+related:
+  - calidad/logging
+  - produccion/observabilidad
+resources:
+  - title: Express — Manejo de errores
+    url: https://expressjs.com/en/guide/error-handling.html
+  - title: RFC 9457 — Problem Details for HTTP APIs
+    url: https://www.rfc-editor.org/rfc/rfc9457
+keywords: [errores, error handler, middleware de errores, next(err), 404, 500, apperror, headerssent, express 5 async]
+milestone: 5
+---
+
+## La idea
+
+Un middleware con **cuatro argumentos** `(error, req, res, next)` es un manejador de errores. Express lo llama cuando:
+
+- un handler **lanza** (o, en Express 5, una función `async` **rechaza**);
+- alguien llama a `next(error)`.
+
+Se registra **al final**, después de todas las rutas, junto con un handler para las rutas que no existen:
+
+```js
+app.use('/api/expenses', expensesRouter);
+
+app.use((req, res) => res.status(404).json({ error: 'No existe' }));  // nadie respondió
+app.use((error, req, res, next) => {                                   // alguien lanzó
+  res.status(500).json({ error: 'Error interno' });
+});
+```
+
+## Un contrato de errores
+
+Decide **una forma** para todos los errores de tu API y respétala siempre. Los clientes lo agradecerán:
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Los datos enviados no son válidos",
+    "details": [{ "field": "amount", "message": "Importe no válido: \"-3\"" }]
+  }
+}
+```
+
+- `code`: estable, para que el cliente decida qué hacer (no cambia si mejoras el texto).
+- `message`: legible por personas.
+- `details`: opcional, por ejemplo, un problema por campo.
+
+## Esperados frente a inesperados
+
+<Columns>
+  <Column title="Esperados (4xx)" tone="good">
+    Datos inválidos, recurso inexistente, sin permisos. Son parte del funcionamiento normal: responde con el código y el mensaje del error, sin registrar trazas.
+  </Column>
+  <Column title="Inesperados (5xx)" tone="bad">
+    Un bug, la base de datos caída. Registra el error **completo** (con traza) y responde un mensaje genérico: nunca reveles detalles internos al cliente.
+  </Column>
+</Columns>
+
+## Errores comunes
+
+- Registrar el manejador antes que las rutas: nunca se ejecuta.
+- Olvidar el cuarto parámetro (`next`) aunque no lo uses: con tres, Express lo trata como un middleware normal.
+- Intentar responder cuando ya se enviaron cabeceras (un streaming a medias): comprueba `res.headersSent` y delega en `next(error)`.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/middleware/error-handler.js', 'src/app.js']}>
+
+Crea el manejador de errores de Monedero. Gracias a la jerarquía `AppError` del hito 1, no necesita un `if` por cada tipo: cada error ya sabe su código HTTP. También traduce los errores del parser JSON de Express:
+
+<SourceFile path="src/middleware/error-handler.js" />
+
+Regístralo al final de la app. Recibe un *logger*: por ahora `console` (en el hito 8 lo cambiarás por pino sin tocar este archivo, porque los dos tienen un método `error`):
+
+```js title="src/app.js"
+import { errorHandler, notFound } from './middleware/error-handler.js'; // [!code ++]
+
+export function createApp({ repository, logger = console }) {
+  // … middleware y rutas …
+  app.use(notFound); // [!code ++]
+  app.use(errorHandler(logger)); // [!code ++]
+  return app;
+}
+```
+
+Ahora los errores tienen siempre la misma forma:
+
+```console
+$ curl -X POST localhost:3000/api/expenses -H 'content-type: application/json' -d '{"amount":"-3","category":"viajes"}'
+{"error":{"code":"VALIDATION_ERROR","message":"Los datos enviados no son válidos","details":[{"field":"amount","message":"Importe no válido: \"-3\""},{"field":"category","message":"Opción inválida: se esperaba una de \"comida\"|\"transporte\"|\"hogar\"|\"ocio\"|\"salud\"|\"otros\""}]}}
+$ curl localhost:3000/api/expenses/abc
+{"error":{"code":"VALIDATION_ERROR","message":"Los datos enviados no son válidos","details":[{"field":"id","message":"Entrada inválida: se esperaba número, recibido NaN"}]}}
+```
+
+</ProjectStep>

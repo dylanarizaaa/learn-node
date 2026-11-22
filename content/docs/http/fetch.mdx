@@ -1,0 +1,148 @@
+---
+title: fetch en Node
+description: Hacer peticiones HTTP con el fetch global — respuestas, JSON, errores de red frente a códigos 4xx/5xx, timeouts con AbortSignal y peticiones en paralelo.
+difficulty: intermedio
+time: 12
+prerequisites:
+  - javascript/async-await
+  - http/servidor-http
+related:
+  - calidad/tests-de-integracion
+  - proyectos/monitor-de-sitios
+resources:
+  - title: MDN — Usar fetch
+    url: https://developer.mozilla.org/es/docs/Web/API/Fetch_API/Using_Fetch
+  - title: Node.js — fetch
+    url: https://nodejs.org/docs/latest/api/globals.html#fetch
+  - title: MDN — AbortSignal.timeout()
+    url: https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal/timeout_static
+keywords: [fetch, http client, response, json, abortsignal, timeout, abortcontroller, response.ok, undici, cliente http]
+milestone: 4
+---
+
+## La idea
+
+<Term slug="fetch">fetch</Term> es global en Node, igual que en el navegador. Devuelve una promesa con un `Response`:
+
+```js
+const response = await fetch('https://api.github.com/repos/nodejs/node');
+console.log(response.status, response.headers.get('content-type'));
+const repo = await response.json(); // también: text(), arrayBuffer(), body (stream)
+console.log(repo.stargazers_count);
+```
+
+Para enviar datos, indica método, cabeceras y cuerpo:
+
+```js
+await fetch('http://localhost:3000/api/expenses', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ amount: '4,50', category: 'ocio' }),
+});
+```
+
+## Dos tipos de fallo
+
+<Columns>
+  <Column title="fetch rechaza">
+    Solo con errores **de red**: DNS que no resuelve, conexión rechazada, timeout. Se capturan con `try/catch`.
+  </Column>
+  <Column title="fetch resuelve" tone="brand">
+    Con **cualquier** respuesta HTTP, incluidas 404 y 500. Tienes que mirar `response.ok` (true para 200–299) o `response.status`.
+  </Column>
+</Columns>
+
+## Timeouts
+
+Por defecto, `fetch` puede esperar mucho tiempo a un servidor que no responde. Pon siempre un límite:
+
+```js
+try {
+  const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+} catch (error) {
+  if (error.name === 'TimeoutError') console.error('El servidor tardó más de 5 s');
+  else throw error;
+}
+```
+
+Con `AbortController` puedes cancelar manualmente (por ejemplo, si el usuario se va), y `AbortSignal.any([...])` combina varias señales.
+
+## Errores comunes
+
+- Asumir que un `404` lanza: no lo hace. Comprueba `response.ok`.
+- Llamar a `response.json()` en una respuesta `204` o en HTML de error: lanza `SyntaxError`.
+- Lanzar cientos de peticiones con `Promise.all` contra una API externa: te limitarán. Procésalas por lotes.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['scripts/smoke.js', 'package.json']}>
+
+Cierra el hito 4 con una **prueba de humo**: un script que usa `fetch` para comprobar que la API funciona de punta a punta. Es el precursor de los tests de integración del hito 8.
+
+```js title="scripts/smoke.js"
+// Prueba de humo: comprueba con fetch que la API responde como esperamos.
+// Uso: node scripts/smoke.js   (con el servidor arrancado)
+const BASE_URL = process.env.BASE_URL ?? 'http://localhost:3000';
+
+async function request(method, path, body) {
+  const response = await fetch(new URL(path, BASE_URL), {
+    method,
+    headers: body ? { 'Content-Type': 'application/json' } : {},
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(5000), // nunca esperes para siempre
+  });
+  return { status: response.status, data: await response.json() };
+}
+
+const checks = {
+  'GET /api/health responde ok': async () => {
+    const { status, data } = await request('GET', '/api/health');
+    return status === 200 && data.status === 'ok';
+  },
+  'POST /api/expenses crea un gasto en céntimos': async () => {
+    const { status, data } = await request('POST', '/api/expenses', { amount: '1,99', category: 'ocio' });
+    return status === 201 && data.amount === 199;
+  },
+  'POST /api/expenses rechaza una categoría inventada': async () => {
+    const { status } = await request('POST', '/api/expenses', { amount: 5, category: 'viajes' });
+    return status === 400;
+  },
+  'GET /api/expenses/summary suma el mes': async () => {
+    const { status, data } = await request('GET', '/api/expenses/summary');
+    return status === 200 && data.total >= 199;
+  },
+};
+
+let failed = 0;
+for (const [name, check] of Object.entries(checks)) {
+  try {
+    const ok = await check();
+    console.log(`${ok ? '✔' : '✖'} ${name}`);
+    if (!ok) failed++;
+  } catch (error) {
+    console.log(`✖ ${name}: ${error.message}`);
+    failed++;
+  }
+}
+process.exitCode = failed > 0 ? 1 : 0;
+```
+
+```json title="package.json"
+"scripts": {
+  "smoke": "node scripts/smoke.js"
+}
+```
+
+```console
+$ npm run smoke
+✔ GET /api/health responde ok
+✔ POST /api/expenses crea un gasto en céntimos
+✔ POST /api/expenses rechaza una categoría inventada
+✔ GET /api/expenses/summary suma el mes
+```
+
+Con el servidor apagado, cada comprobación muestra `✖ … fetch failed` y el script sale con código 1: así sabrás que algo va mal sin leer nada.
+
+**Hito 4 completo**: una API JSON sin dependencias. Has escrito a mano enrutamiento, lectura del cuerpo, errores centralizados y archivos estáticos; en el hito 5 verás cómo Express hace todo eso por ti.
+
+</ProjectStep>

@@ -1,0 +1,110 @@
+---
+title: Introducción a Express
+description: Qué aporta Express sobre node:http, qué cambia en Express 5 y cómo separar la aplicación (app.js) del servidor (server.js).
+difficulty: intermedio
+time: 12
+prerequisites:
+  - http/fetch
+related:
+  - express/rutas-y-routers
+  - introduccion/mapa-del-ecosistema
+resources:
+  - title: Express — Guía de inicio
+    url: https://expressjs.com/en/starter/installing.html
+  - title: Express — Migrar a Express 5
+    url: https://expressjs.com/en/guide/migrating-5.html
+keywords: [express, express 5, framework, app, createapp, res.json, req.params, instalar, fastify]
+milestone: 5
+---
+
+## La idea
+
+En el hito 4 escribiste a mano el enrutamiento, la lectura del cuerpo, el manejo de errores y los estáticos. <Term slug="express">Express</Term> resuelve todo eso con una API pequeña y estable:
+
+| A mano con node:http | Con Express |
+| --- | --- |
+| Tabla `routes['GET /api/x']` | `app.get('/api/x', handler)` |
+| Rutas con parámetros: regex | `'/api/expenses/:id'` → `req.params.id` |
+| `readJson(req)` | `app.use(express.json())` → `req.body` |
+| `sendJson(res, 201, data)` | `res.status(201).json(data)` |
+| `try/catch` central | Middleware de errores |
+| `serveStatic()` | `express.static('public')` |
+
+Un servidor mínimo:
+
+```js title="app.js"
+import express from 'express';
+
+const app = express();
+app.use(express.json());
+
+app.get('/api/saludo/:nombre', (req, res) => {
+  res.json({ mensaje: `Hola, ${req.params.nombre}`, pagina: req.query.pagina ?? '1' });
+});
+
+app.listen(3000);
+```
+
+## Express 5
+
+La versión 5 (estable desde 2024) moderniza el framework:
+
+- **Errores async**: si un handler `async` lanza o rechaza, Express pasa el error al manejador de errores. En Express 4 la petición se quedaba colgada.
+- `req.query` es de solo lectura y `req.body` es `undefined` si no hay parser.
+- Sintaxis de rutas más estricta (los comodines llevan nombre: `/*ruta`).
+- Requiere Node 18 o superior.
+
+## app y servidor por separado
+
+Es una práctica que paga enseguida: `createApp()` **construye** la aplicación con sus dependencias y `server.js` la **arranca**. Los tests podrán crear una app con una base de datos de prueba sin tocar el puerto real.
+
+## Errores comunes
+
+- Seguir tutoriales de Express 4 que envuelven cada ruta async en `try/catch` o en paquetes como `express-async-handler`: en Express 5 ya no hace falta.
+- Usar `app.listen` en el mismo archivo que define las rutas: dificulta los tests.
+- Olvidar `express.json()`: `req.body` llega vacío.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['package.json', 'src/app.js', 'src/server.js']}>
+
+Instala Express (la primera dependencia de Monedero) y reorganiza el servidor en dos archivos. Por ahora la app solo tiene el endpoint de salud y los estáticos; las rutas de gastos llegan en la siguiente lección:
+
+```bash
+npm install express
+```
+
+```js title="src/app.js"
+import { join } from 'node:path';
+import express from 'express';
+
+/** Construye la app Express con sus dependencias. */
+export function createApp({ repository }) {
+  const app = express();
+  app.use(express.json({ limit: '100kb' }));
+  app.use(express.static(join(import.meta.dirname, '..', 'public')));
+
+  app.get('/api/health', (req, res) => {
+    res.json({ status: 'ok', uptime: Math.round(process.uptime()) });
+  });
+
+  return app;
+}
+```
+
+```js title="src/server.js"
+import { createServer } from 'node:http';
+import { join } from 'node:path';
+import { createApp } from './app.js';
+import { createJsonStore } from './storage/json-store.js';
+
+const PORT = Number(process.env.PORT ?? 3000);
+const repository = createJsonStore(process.env.DATA_FILE ?? join(import.meta.dirname, '..', 'data', 'gastos.json'));
+
+const server = createServer(createApp({ repository }));
+server.listen(PORT, () => console.log(`Monedero escuchando en http://localhost:${PORT}`));
+```
+
+Una app de Express es en realidad un handler `(req, res)`: por eso `createServer(app)` funciona. Puedes borrar `src/http/respond.js` y `src/http/static.js`: Express los sustituye.
+
+</ProjectStep>

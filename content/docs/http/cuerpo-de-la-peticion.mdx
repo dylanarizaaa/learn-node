@@ -1,0 +1,114 @@
+---
+title: El cuerpo de la petición
+description: Leer el cuerpo de un POST como stream, comprobar Content-Type, limitar el tamaño y parsear JSON sin tumbar el servidor.
+difficulty: intermedio
+time: 15
+prerequisites:
+  - http/enrutamiento
+  - nucleo/streams
+related:
+  - express/validacion-con-zod
+  - seguridad/seguridad-de-apis
+resources:
+  - title: Node.js — Anatomía de una transacción HTTP (cuerpo)
+    url: https://nodejs.org/en/learn/modules/anatomy-of-an-http-transaction#request-body
+keywords: [body, cuerpo, post, json.parse, content-type, límite, 413, 415, stream, buffer.concat, validación]
+milestone: 4
+---
+
+## La idea
+
+El cuerpo de una petición no llega de golpe: `req` es un **stream legible** y los datos llegan por trozos. Para leer un JSON hay que juntar los trozos, unirlos y parsearlos:
+
+```js
+const chunks = [];
+for await (const chunk of req) chunks.push(chunk);
+const data = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+```
+
+Ese código funciona… hasta que alguien lo ataca. Un servidor real necesita tres defensas.
+
+## Las tres defensas
+
+1. **Comprobar `Content-Type`**: si no es `application/json`, responde `415 Unsupported Media Type` en lugar de intentar parsear cualquier cosa.
+2. **Limitar el tamaño**: sin límite, un cliente puede enviarte 2 GB y llenar la memoria. Cuenta los bytes mientras llegan y corta con `413 Payload Too Large`.
+3. **Capturar el `JSON.parse`**: un JSON mal formado lanza `SyntaxError`; debe ser un `400`, no un `500`.
+
+Y una cuarta, que no es del transporte sino de los datos: **validar** cada campo. Que el JSON sea válido no significa que `amount` sea un importe.
+
+## Errores comunes
+
+- Usar `chunk.toString()` en cada trozo y concatenar textos: rompe caracteres multibyte partidos entre trozos (lo viste en [Buffers](/docs/nucleo/buffers)).
+- Confiar en `Content-Length`: el cliente puede mentir. Cuenta los bytes reales.
+- Guardar el objeto recibido tal cual (`store.add(body)`): el cliente podría colar campos como `id` o `userId`. Copia solo los campos que esperas.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/http/respond.js', 'src/server.js']}>
+
+Añade `readJson` junto a `sendJson`. Usa las clases de error de Monedero para que el manejador central responda con el código correcto:
+
+```js title="src/http/respond.js"
+import { AppError } from '../lib/errors.js';
+
+/**
+ * Lee el cuerpo de la petición (un stream) y lo convierte de JSON a objeto.
+ * Corta si supera `limit` bytes: nadie debe poder llenarnos la memoria.
+ */
+export async function readJson(req, { limit = 100 * 1024 } = {}) {
+  if (!req.headers['content-type']?.startsWith('application/json')) {
+    throw new AppError('Envía el cuerpo con Content-Type: application/json', { status: 415, code: 'UNSUPPORTED_MEDIA_TYPE' });
+  }
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > limit) {
+      throw new AppError('El cuerpo de la petición es demasiado grande', { status: 413, code: 'PAYLOAD_TOO_LARGE' });
+    }
+    chunks.push(chunk);
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch {
+    throw new AppError('El cuerpo de la petición no es JSON válido', { status: 400, code: 'INVALID_JSON' });
+  }
+}
+```
+
+Y la ruta para crear gastos. Fíjate en que se construye un objeto nuevo con solo los campos permitidos:
+
+```js title="src/server.js"
+import { CATEGORIES, currentMonth, monthRange, summarize, today } from './domain/expenses.js';
+import { AppError, NotFoundError, ValidationError } from './lib/errors.js';
+import { toCents } from './lib/money.js';
+import { readJson, sendJson } from './http/respond.js';
+
+// dentro de la tabla de rutas:
+'POST /api/expenses': async (req, res) => {
+  const body = await readJson(req);
+  if (!CATEGORIES.includes(body.category)) {
+    throw new ValidationError([{ field: 'category', message: `Usa una de: ${CATEGORIES.join(', ')}` }]);
+  }
+  const expense = await store.add({
+    amount: toCents(body.amount), // lanza RangeError si no es válido → 400
+    category: body.category,
+    description: String(body.description ?? ''),
+    date: today(),
+  });
+  sendJson(res, 201, expense);
+},
+```
+
+```console
+$ curl -X POST localhost:3000/api/expenses -H 'content-type: application/json' -d '{"amount":"12,50","category":"comida","description":"Almuerzo"}'
+{"id":5,"amount":1250,"category":"comida","description":"Almuerzo","date":"2026-11-22"}
+$ curl -X POST localhost:3000/api/expenses -H 'content-type: application/json' -d '{"amount":'
+{"error":{"code":"INVALID_JSON","message":"El cuerpo de la petición no es JSON válido"}}
+$ curl -X POST localhost:3000/api/expenses -d 'x'
+{"error":{"code":"UNSUPPORTED_MEDIA_TYPE","message":"Envía el cuerpo con Content-Type: application/json"}}
+```
+
+La validación a mano ya empieza a pesar (y solo hay tres campos). En el hito 5 la sustituirás por un schema de Zod.
+
+</ProjectStep>

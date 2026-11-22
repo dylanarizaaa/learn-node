@@ -1,0 +1,90 @@
+---
+title: CORS y cabeceras de seguridad
+description: Qué es CORS y cuándo necesitas configurarlo, y las cabeceras de seguridad que añade helmet (CSP, HSTS, nosniff…).
+difficulty: intermedio
+time: 12
+prerequisites:
+  - express/middleware
+related:
+  - seguridad/seguridad-de-apis
+  - produccion/despliegue
+resources:
+  - title: MDN — CORS
+    url: https://developer.mozilla.org/es/docs/Web/HTTP/Guides/CORS
+  - title: helmet — Documentación
+    url: https://helmetjs.github.io/
+  - title: Express — cors
+    url: https://expressjs.com/en/resources/middleware/cors.html
+keywords: [cors, origen, preflight, options, access-control-allow-origin, helmet, csp, hsts, x-content-type-options, cabeceras de seguridad]
+milestone: 5
+---
+
+## CORS: cuándo el navegador te bloquea
+
+Un **origen** es protocolo + dominio + puerto (`https://app.example.com:443`). Por seguridad, el navegador **no deja** que una página lea respuestas de otro origen… salvo que ese servidor lo permita con cabeceras <Term slug="cors">CORS</Term>:
+
+```http
+Access-Control-Allow-Origin: https://app.example.com
+```
+
+Para peticiones «no simples» (por ejemplo, `POST` con JSON o con `Authorization`), el navegador envía antes una petición `OPTIONS` de comprobación (*preflight*).
+
+Puntos clave:
+
+- **CORS solo afecta a navegadores**. `curl`, otro servidor o una app móvil no lo aplican. No es una medida de seguridad para tu API: es una protección para los usuarios del navegador.
+- **Si tu frontend y tu API comparten origen** (o hay un proxy delante), no necesitas CORS.
+- Si lo necesitas, permite **orígenes concretos**, no `*`, sobre todo si usas cookies.
+
+```js
+import cors from 'cors';
+app.use('/api', cors({ origin: ['https://app.example.com'], credentials: true }));
+```
+
+## Cabeceras de seguridad con helmet
+
+`helmet` añade de una vez una docena de cabeceras que endurecen lo que el navegador hace con tus respuestas:
+
+| Cabecera | Protege de |
+| --- | --- |
+| `Content-Security-Policy` | Scripts inyectados (XSS): solo se ejecuta código de orígenes permitidos |
+| `Strict-Transport-Security` | Que se acceda por HTTP sin cifrar |
+| `X-Content-Type-Options: nosniff` | Que el navegador «adivine» el tipo y ejecute un archivo como script |
+| `X-Frame-Options` / `frame-ancestors` | Que tu página se incruste en otra (clickjacking) |
+| `Referrer-Policy` | Filtrar URLs con datos a otros sitios |
+
+También elimina `X-Powered-By: Express`, que solo da pistas a un atacante.
+
+## Errores comunes
+
+- `Access-Control-Allow-Origin: *` con `credentials: true`: el navegador lo rechaza, y si lo «arreglas» reflejando cualquier origen, abres la puerta a cualquiera.
+- Desactivar la CSP porque «rompe» la página: casi siempre es un `<script>` en línea. Muévelo a un archivo `.js`.
+- Pensar que CORS protege tu API de bots: no; para eso están la autenticación y el límite de peticiones.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/app.js']}>
+
+Monedero sirve su página y su API desde el mismo origen, así que **no necesita CORS**. Sí añade helmet como primer middleware:
+
+```bash
+npm install helmet
+```
+
+```js title="src/app.js"
+import helmet from 'helmet'; // [!code ++]
+
+const app = express();
+app.use(helmet()); // [!code ++]
+app.use(requestLogger);
+```
+
+```console
+$ curl -sI localhost:3000/api/health | grep -iE "content-security|strict-transport|x-content-type|x-powered"
+Content-Security-Policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;…
+Strict-Transport-Security: max-age=31536000; includeSubDomains
+X-Content-Type-Options: nosniff
+```
+
+La página de `public/` sigue funcionando con la CSP por defecto porque su JavaScript está en `app.js` y no en línea. Con esto cierras el **hito 5**: una API REST con Express, validación, errores y capas. El siguiente paso es dejar el archivo JSON por una base de datos de verdad.
+
+</ProjectStep>

@@ -1,0 +1,122 @@
+---
+title: Enrutamiento
+description: Decidir qué código atiende cada petición — analizar la URL, una tabla de rutas por método y ruta, query strings y errores centralizados.
+difficulty: intermedio
+time: 15
+prerequisites:
+  - http/servidor-http
+related:
+  - express/rutas-y-routers
+  - nucleo/path-y-url
+resources:
+  - title: MDN — URL
+    url: https://developer.mozilla.org/es/docs/Web/API/URL
+  - title: MDN — URLSearchParams
+    url: https://developer.mozilla.org/es/docs/Web/API/URLSearchParams
+keywords: [router, enrutamiento, rutas, url, searchparams, query string, tabla de rutas, 404, manejo de errores]
+milestone: 4
+---
+
+## La idea
+
+`req.url` contiene la ruta **y** la query string (`/api/expenses?month=2026-11`). Para enrutar, sepárala con la clase `URL` (necesita una base porque `req.url` es relativa) y elige el handler según **método + ruta**:
+
+```js
+const url = new URL(req.url, 'http://localhost');
+url.pathname;                     // '/api/expenses'
+url.searchParams.get('month');    // '2026-11' (o null si no está)
+```
+
+Una **tabla de rutas** escala mejor que una cadena de `if`:
+
+```js
+const routes = {
+  'GET /api/health': (req, res) => { /* … */ },
+  'GET /api/expenses': (req, res, url) => { /* … */ },
+  'POST /api/expenses': (req, res) => { /* … */ },
+};
+
+const handler = routes[`${req.method} ${url.pathname}`];
+```
+
+Las rutas con parámetros (`/api/expenses/7`) complican el esquema: necesitarías expresiones regulares o `URLPattern`. Es una de las razones para usar [Express](/docs/express/introduccion-a-express), que lo resuelve con `/api/expenses/:id`.
+
+## Un único sitio para los errores
+
+Si cada handler puede lanzar, el servidor necesita **un** `try/catch` que convierta cualquier error en una respuesta. Los errores con `status` (los de `src/lib/errors.js`) dicen qué código usar; el resto son fallos inesperados: se registran y se responde 500 sin dar detalles internos.
+
+## Errores comunes
+
+- Comparar `req.url === '/api/expenses'`: falla en cuanto llega `?month=…`. Compara `url.pathname`.
+- Devolver 404 para un método no soportado en una ruta que existe: lo correcto es `405 Method Not Allowed`, aunque muchas APIs responden 404 por simplicidad.
+- Mostrar `error.stack` al cliente en un 500: revela rutas y versiones de tu servidor.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/server.js']}>
+
+Convierte el servidor en una pequeña API con tabla de rutas. Reutiliza el almacenamiento JSON y el dominio de la CLI: **el mismo código sirve a la terminal y a la red**. Versión intermedia; `POST` llega en la próxima lección y los archivos estáticos, en la siguiente:
+
+```js title="src/server.js"
+import { createServer } from 'node:http';
+import { join } from 'node:path';
+import { currentMonth, monthRange, summarize } from './domain/expenses.js';
+import { AppError, NotFoundError } from './lib/errors.js';
+import { sendJson } from './http/respond.js';
+import { createJsonStore } from './storage/json-store.js';
+
+const PORT = Number(process.env.PORT ?? 3000);
+const store = createJsonStore(process.env.DATA_FILE ?? join(import.meta.dirname, '..', 'data', 'gastos.json'));
+
+/** Gastos de un mes (?month=AAAA-MM o el actual), del más reciente al más antiguo. */
+async function listMonth(url) {
+  const { from, to } = monthRange(url.searchParams.get('month') ?? currentMonth());
+  const expenses = await store.list();
+  return expenses.filter((e) => e.date >= from && e.date <= to).toSorted((a, b) => b.date.localeCompare(a.date));
+}
+
+// Tabla de rutas: "MÉTODO /ruta" → handler
+const routes = {
+  'GET /api/health': (req, res) => {
+    sendJson(res, 200, { status: 'ok', uptime: Math.round(process.uptime()) });
+  },
+  'GET /api/expenses': async (req, res, url) => {
+    sendJson(res, 200, await listMonth(url));
+  },
+  'GET /api/expenses/summary': async (req, res, url) => {
+    sendJson(res, 200, summarize(await listMonth(url)));
+  },
+};
+
+const server = createServer(async (req, res) => {
+  const url = new URL(req.url ?? '/', 'http://localhost');
+  try {
+    const handler = routes[`${req.method} ${url.pathname}`];
+    if (!handler) throw new NotFoundError(`No existe la ruta ${req.method} ${url.pathname}`);
+    await handler(req, res, url);
+  } catch (error) {
+    if (res.headersSent) return res.destroy(); // ya empezamos a responder: solo podemos cortar
+    if (error instanceof AppError) {
+      return sendJson(res, error.status, { error: { code: error.code, message: error.message, details: error.details } });
+    }
+    if (error instanceof RangeError) { // monthRange y toCents lanzan RangeError con datos inválidos
+      return sendJson(res, 400, { error: { code: 'VALIDATION_ERROR', message: error.message } });
+    }
+    console.error(error);
+    sendJson(res, 500, { error: { code: 'INTERNAL_ERROR', message: 'Error interno del servidor' } });
+  }
+});
+
+server.listen(PORT, () => console.log(`Monedero escuchando en http://localhost:${PORT}`));
+```
+
+```console
+$ curl "localhost:3000/api/expenses?month=2026-13"
+{"error":{"code":"VALIDATION_ERROR","message":"Mes no válido: \"2026-13\" (usa AAAA-MM)"}}
+$ curl localhost:3000/api/nada
+{"error":{"code":"NOT_FOUND","message":"No existe la ruta GET /api/nada"}}
+```
+
+Fíjate en que la jerarquía de errores que creaste en el hito 1 ya da sus frutos: `NotFoundError` sabe que es un 404.
+
+</ProjectStep>

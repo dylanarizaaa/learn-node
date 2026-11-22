@@ -1,0 +1,177 @@
+---
+title: Arquitectura por capas
+description: Rutas, servicios y repositorios — qué va en cada capa, por qué, y cómo componer la aplicación inyectando dependencias sin frameworks.
+difficulty: intermedio
+time: 18
+prerequisites:
+  - express/manejo-de-errores
+related:
+  - datos/node-sqlite
+  - calidad/mocks
+resources:
+  - title: Martin Fowler — Repository
+    url: https://martinfowler.com/eaaCatalog/repository.html
+  - title: Martin Fowler — Service Layer
+    url: https://martinfowler.com/eaaCatalog/serviceLayer.html
+keywords: [arquitectura, capas, controlador, servicio, repositorio, inyección de dependencias, composición, separación de responsabilidades, testabilidad]
+milestone: 5
+---
+
+## La idea
+
+Si una ruta valida, calcula, guarda en el disco y envía la respuesta, cualquier cambio (pasar de JSON a SQLite, añadir una CLI que haga lo mismo) obliga a tocarlo todo. Separar en **capas** con responsabilidades claras lo evita:
+
+<Layers
+  layers={[
+    { title: 'Rutas', desc: 'HTTP', items: ['validar entrada', 'llamar al servicio', 'elegir código y formato'], tone: 'brand' },
+    { title: 'Servicio', desc: 'Casos de uso', items: ['reglas de negocio', 'NotFoundError', 'emitir eventos'] },
+    { title: 'Dominio', desc: 'Funciones puras', items: ['toCents', 'summarize', 'monthRange'] },
+    { title: 'Repositorio', desc: 'Datos', items: ['JSON hoy', 'SQLite mañana'], tone: 'muted' },
+  ]}
+  caption="Cada capa solo conoce a la de abajo. El servicio no sabe qué es HTTP ni dónde se guardan los datos."
+/>
+
+| Capa | Sabe de | No sabe de |
+| --- | --- | --- |
+| Rutas | `req`, `res`, códigos HTTP, Zod | Archivos, SQL |
+| Servicio | Reglas del negocio, errores de la app | HTTP, SQL |
+| <Term slug="repositorio">Repositorio</Term> | Archivos, SQL | HTTP, reglas |
+
+## Inyección de dependencias sin frameworks
+
+Cada capa **recibe** sus dependencias en lugar de importarlas o crearlas: `createExpensesService({ repository, events })`. El punto de entrada (*composition root*) decide qué piezas concretas usar. Beneficios inmediatos:
+
+- **Tests**: pasas un repositorio falso o una base de datos en memoria.
+- **Cambios**: sustituir el JSON por SQLite es cambiar una línea en `server.js`.
+- **Reutilización**: la CLI y la API usan el mismo servicio.
+
+## Errores comunes
+
+- **Pasar `req` o `res` al servicio**: lo atas a HTTP y no podrás usarlo desde la CLI ni desde un worker.
+- **Reglas de negocio en el repositorio** (por ejemplo, «si no hay fecha, hoy»): el repositorio solo guarda y lee.
+- **Capas por obligación**: una ruta de salud no necesita servicio ni repositorio. Las capas se justifican cuando hay reglas o varias formas de acceder a los datos.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/expenses/expenses.service.js', 'src/expenses/expenses.routes.js', 'src/app.js']}>
+
+Crea el servicio de gastos. Es la versión del hito 5: asíncrona porque el almacenamiento JSON lo es. Recibe también el bus de eventos que creaste en el hito 2 para anunciar los gastos nuevos:
+
+```js title="src/expenses/expenses.service.js"
+import { currentMonth, monthRange, summarize, today } from '../domain/expenses.js';
+import { NotFoundError } from '../lib/errors.js';
+
+/**
+ * Casos de uso de los gastos. No sabe nada de HTTP:
+ * recibe datos ya validados, aplica las reglas y anuncia lo que pasa.
+ */
+export function createExpensesService({ repository, events }) {
+  async function list({ month = currentMonth(), category } = {}) {
+    const { from, to } = monthRange(month);
+    const expenses = await repository.list();
+    return expenses
+      .filter((e) => e.date >= from && e.date <= to && (!category || e.category === category))
+      .toSorted((a, b) => b.date.localeCompare(a.date));
+  }
+
+  return {
+    list,
+
+    async get(id) {
+      const expense = await repository.findById(id);
+      if (!expense) throw new NotFoundError(`No existe el gasto ${id}`);
+      return expense;
+    },
+
+    async create(data) {
+      const expense = await repository.add({ ...data, date: data.date ?? today() });
+      events.emit('expense.created', expense);
+      return expense;
+    },
+
+    async update(id, changes) {
+      const expense = await repository.update(id, changes);
+      if (!expense) throw new NotFoundError(`No existe el gasto ${id}`);
+      return expense;
+    },
+
+    async remove(id) {
+      if (!(await repository.remove(id))) throw new NotFoundError(`No existe el gasto ${id}`);
+    },
+
+    async summary(month = currentMonth()) {
+      return { month, ...summarize(await list({ month })) };
+    },
+  };
+}
+```
+
+Las rutas quedan reducidas a **validar → llamar → responder**:
+
+```js title="src/expenses/expenses.routes.js"
+import { Router } from 'express';
+import { parse } from '../lib/validation.js';
+import {
+  createExpenseSchema,
+  idSchema,
+  listExpensesSchema,
+  summarySchema,
+  updateExpenseSchema,
+} from './expenses.schema.js';
+
+/** Rutas de /api/expenses: validar la entrada, llamar al servicio y responder. */
+export function expensesRouter({ expenses }) {
+  const router = Router();
+
+  router.get('/', async (req, res) => {
+    const query = parse(listExpensesSchema, req.query);
+    res.json(await expenses.list(query));
+  });
+
+  router.post('/', async (req, res) => {
+    const data = parse(createExpenseSchema, req.body);
+    res.status(201).json(await expenses.create(data));
+  });
+
+  router.get('/summary', async (req, res) => {
+    const { month } = parse(summarySchema, req.query);
+    res.json(await expenses.summary(month));
+  });
+
+  router.get('/:id', async (req, res) => {
+    const { id } = parse(idSchema, req.params);
+    res.json(await expenses.get(id));
+  });
+
+  router.patch('/:id', async (req, res) => {
+    const { id } = parse(idSchema, req.params);
+    const changes = parse(updateExpenseSchema, req.body);
+    res.json(await expenses.update(id, changes));
+  });
+
+  router.delete('/:id', async (req, res) => {
+    const { id } = parse(idSchema, req.params);
+    await expenses.remove(id);
+    res.status(204).end();
+  });
+
+  return router;
+}
+```
+
+Y `createApp` compone las piezas:
+
+```js title="src/app.js"
+import { EventEmitter } from 'node:events';
+import { createExpensesService } from './expenses/expenses.service.js'; // [!code ++]
+
+export function createApp({ repository, events = new EventEmitter(), logger = console }) {
+  const expenses = createExpensesService({ repository, events }); // [!code ++]
+  // …
+  app.use('/api/expenses', expensesRouter({ repository })); // [!code --]
+  app.use('/api/expenses', expensesRouter({ expenses })); // [!code ++]
+```
+
+Prueba la API completa con el script de humo del hito 4: `npm run smoke` debería seguir en verde.
+
+</ProjectStep>

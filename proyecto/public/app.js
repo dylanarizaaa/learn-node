@@ -4,7 +4,8 @@ const status = document.querySelector('#status');
 try {
   const response = await fetch('/api/health');
   const health = await response.json();
-  status.textContent = `${health.status} · versión ${health.version} · ${health.uptime} s en marcha`;
+  const version = health.version ? ` · versión ${health.version}` : '';
+  status.textContent = `${health.status}${version} · ${health.uptime} s en marcha`;
   status.className = 'ok';
 } catch {
   status.textContent = 'sin conexión';

@@ -1,0 +1,139 @@
+---
+title: Rutas y routers
+description: Métodos y rutas, parámetros (:id), query strings, códigos de respuesta y cómo agrupar rutas relacionadas con express.Router.
+difficulty: intermedio
+time: 15
+prerequisites:
+  - express/introduccion-a-express
+related:
+  - express/middleware
+  - http/protocolo-http
+resources:
+  - title: Express — Routing
+    url: https://expressjs.com/en/guide/routing.html
+  - title: Express — API de Router
+    url: https://expressjs.com/en/5x/api.html#router
+keywords: [router, rutas, params, req.params, req.query, res.status, 204, crud, rest, orden de rutas]
+milestone: 5
+---
+
+## La idea
+
+Una ruta es **método + patrón + handler**. Los segmentos con `:` son parámetros:
+
+```js
+app.get('/api/expenses', (req, res) => {...});           // GET /api/expenses?month=2026-11
+app.get('/api/expenses/:id', (req, res) => {             // GET /api/expenses/7
+  req.params.id;   // '7' (siempre texto)
+});
+app.post('/api/expenses', (req, res) => res.status(201).json(created));
+app.delete('/api/expenses/:id', (req, res) => res.status(204).end());
+```
+
+## Routers: rutas agrupadas
+
+Un `Router` es una mini-aplicación con sus propias rutas que se **monta** bajo un prefijo. Así cada recurso vive en su archivo:
+
+```js title="users.routes.js"
+import { Router } from 'express';
+
+export const usersRouter = Router();
+usersRouter.get('/', listUsers);       // GET /api/users
+usersRouter.get('/:id', getUser);      // GET /api/users/:id
+```
+
+```js title="app.js"
+app.use('/api/users', usersRouter);
+```
+
+## El orden importa
+
+Express prueba las rutas **en el orden en que se registran** y usa la primera que encaja. Si declaras `/:id` antes que `/summary`, una petición a `/summary` llegará al handler de `/:id` con `id = 'summary'`. Declara primero las rutas fijas.
+
+## Responder bien
+
+- `res.json(data)`: 200 con JSON (pone `Content-Type` y serializa).
+- `res.status(201).json(data)`: tras crear.
+- `res.status(204).end()`: éxito sin cuerpo (tras borrar).
+- `res.set('Nombre', 'valor')`, `res.type('text/csv')`, `res.attachment('archivo.csv')` para cabeceras.
+
+## Errores comunes
+
+- Usar `req.params.id` como número sin convertirlo: `'7' === 7` es `false`.
+- Responder dos veces (por ejemplo, olvidar un `return` tras un `res.json` dentro de un `if`): `ERR_HTTP_HEADERS_SENT`.
+- Poner lógica de negocio dentro de los handlers: en [Arquitectura por capas](/docs/express/arquitectura-por-capas) verás dónde va.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/storage/json-store.js', 'src/expenses/expenses.routes.js', 'src/app.js']}>
+
+Para un CRUD completo, el almacenamiento JSON necesita leer, actualizar y borrar por id. Añádelo a la fábrica (`load` y `save` son las funciones internas que ya tenías):
+
+```js title="src/storage/json-store.js"
+async findById(id) {
+  return (await load()).find((e) => e.id === id);
+},
+
+async update(id, changes) {
+  const expenses = await load();
+  const index = expenses.findIndex((e) => e.id === id);
+  if (index === -1) return undefined;
+  expenses[index] = { ...expenses[index], ...changes };
+  await save(expenses);
+  return expenses[index];
+},
+
+async remove(id) {
+  const expenses = await load();
+  const rest = expenses.filter((e) => e.id !== id);
+  if (rest.length === expenses.length) return false;
+  await save(rest);
+  return true;
+},
+```
+
+Crea el router de gastos. Es una versión **provisional** que habla directamente con el almacenamiento y no valida: en las próximas tres lecciones le añadirás validación, errores centralizados y una capa de servicio.
+
+```js title="src/expenses/expenses.routes.js"
+import { Router } from 'express';
+
+export function expensesRouter({ repository }) {
+  const router = Router();
+
+  router.get('/', async (req, res) => {
+    res.json(await repository.list());
+  });
+
+  router.post('/', async (req, res) => {
+    const { amount, category, description = '' } = req.body; // ⚠ sin validar todavía
+    const expense = await repository.add({ amount, category, description, date: new Date().toISOString().slice(0, 10) });
+    res.status(201).json(expense);
+  });
+
+  router.get('/:id', async (req, res) => {
+    const expense = await repository.findById(Number(req.params.id));
+    if (!expense) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'No existe el gasto' } });
+    res.json(expense);
+  });
+
+  router.delete('/:id', async (req, res) => {
+    const removed = await repository.remove(Number(req.params.id));
+    res.status(removed ? 204 : 404).end();
+  });
+
+  return router;
+}
+```
+
+```js title="src/app.js"
+import { expensesRouter } from './expenses/expenses.routes.js'; // [!code ++]
+
+app.use('/api/expenses', expensesRouter({ repository })); // [!code ++]
+```
+
+```console
+$ curl -X DELETE -i localhost:3000/api/expenses/2
+HTTP/1.1 204 No Content
+```
+
+</ProjectStep>

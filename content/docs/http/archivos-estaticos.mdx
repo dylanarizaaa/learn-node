@@ -1,0 +1,128 @@
+---
+title: Archivos estáticos
+description: Servir HTML, CSS e imágenes desde una carpeta con streams, el Content-Type correcto y protección contra path traversal.
+difficulty: intermedio
+time: 12
+prerequisites:
+  - http/enrutamiento
+  - nucleo/path-y-url
+related:
+  - express/middleware
+  - seguridad/seguridad-de-apis
+resources:
+  - title: OWASP — Path Traversal
+    url: https://owasp.org/www-community/attacks/Path_Traversal
+  - title: MDN — Tipos MIME comunes
+    url: https://developer.mozilla.org/es/docs/Web/HTTP/Guides/MIME_types/Common_types
+keywords: [archivos estáticos, static, mime, content-type, path traversal, createreadstream, pipeline, public]
+milestone: 4
+---
+
+## La idea
+
+Servir un archivo es leerlo del disco y escribirlo en la respuesta. Con streams, el archivo nunca está entero en memoria:
+
+```js
+import { createReadStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
+
+res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+await pipeline(createReadStream('public/index.html'), res);
+```
+
+Necesitas dos cosas más: decirle al navegador **qué tipo de archivo** es (por la extensión) y, sobre todo, **no salir de la carpeta pública**.
+
+## Path traversal
+
+Si construyes la ruta con lo que llega en la URL, un atacante puede pedir `/../.env` o `/..%2f.env` y leer cualquier archivo del servidor. La defensa:
+
+1. Decodifica la ruta (`%2f` → `/`).
+2. Únela a la carpeta pública con `path.join`, que resuelve los `..`.
+3. Comprueba que el resultado **sigue empezando** por la carpeta pública. Si no, 404.
+
+<Callout type="danger" title="No intentes filtrar «..» a mano">
+Reemplazar `'..'` por `''` en el texto se puede saltar con variantes (`....//`, codificaciones). Resuelve la ruta y compara el resultado: es la única comprobación fiable.
+</Callout>
+
+## Errores comunes
+
+- Olvidar el `Content-Type`: el navegador puede mostrar el HTML como texto o negarse a ejecutar un `.js`.
+- Usar `readFile` para servir archivos grandes (vídeos, descargas): cada petición carga el archivo entero en memoria.
+- Servir la raíz del proyecto como carpeta estática: expones `.env`, `package.json` y tu código.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/http/static.js', 'src/server.js', 'public/index.html']}>
+
+Monedero tendrá una pequeña página en `public/` que muestra el estado de la API. Crea el servidor de estáticos:
+
+```js title="src/http/static.js"
+import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
+import { extname, join, sep } from 'node:path';
+import { pipeline } from 'node:stream/promises';
+import { NotFoundError } from '../lib/errors.js';
+
+const PUBLIC_DIR = join(import.meta.dirname, '..', '..', 'public');
+const TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
+};
+
+/** Sirve un archivo de public/ en streaming, sin salir nunca de esa carpeta. */
+export async function serveStatic(pathname, res) {
+  let relative;
+  try {
+    relative = decodeURIComponent(pathname === '/' ? '/index.html' : pathname);
+  } catch {
+    throw new NotFoundError(); // %E0%A4%A (codificación rota)
+  }
+  const file = join(PUBLIC_DIR, relative);
+  // join resuelve los "..": si el resultado queda fuera de public/, es un intento de escapar.
+  if (!file.startsWith(PUBLIC_DIR + sep)) throw new NotFoundError();
+
+  const info = await stat(file).catch(() => null);
+  if (!info?.isFile()) throw new NotFoundError(`No existe ${pathname}`);
+
+  res.writeHead(200, {
+    'Content-Type': TYPES[extname(file)] ?? 'application/octet-stream',
+    'Content-Length': info.size,
+  });
+  await pipeline(createReadStream(file), res);
+}
+```
+
+En el servidor, las peticiones `GET` que no son de la API van a los estáticos:
+
+```js title="src/server.js"
+const handler = routes[`${req.method} ${url.pathname}`];
+if (!handler) throw new NotFoundError(`No existe la ruta ${req.method} ${url.pathname}`); // [!code --]
+await handler(req, res, url); // [!code --]
+if (handler) { // [!code ++]
+  await handler(req, res, url); // [!code ++]
+} else if (req.method === 'GET' && !url.pathname.startsWith('/api/')) { // [!code ++]
+  await serveStatic(url.pathname, res); // [!code ++]
+} else { // [!code ++]
+  throw new NotFoundError(`No existe la ruta ${req.method} ${url.pathname}`); // [!code ++]
+} // [!code ++]
+```
+
+La página es HTML con un script que consulta `/api/health` con `fetch` desde el navegador:
+
+<SourceFile path="public/index.html" />
+
+<SourceFile path="public/app.js" />
+
+```console
+$ curl -s -o /dev/null -w "%{http_code}\n" localhost:3000/
+200
+$ curl -s -o /dev/null -w "%{http_code}\n" localhost:3000/..%2fpackage.json
+404
+```
+
+</ProjectStep>

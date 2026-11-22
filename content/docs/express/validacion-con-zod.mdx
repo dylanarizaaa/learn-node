@@ -1,0 +1,102 @@
+---
+title: Validación con Zod
+description: Declara cómo deben ser los datos y valida cuerpo, query y parámetros con Zod 4 — transformaciones, coerción, mensajes en español y tipos inferidos.
+difficulty: intermedio
+time: 18
+prerequisites:
+  - express/middleware
+related:
+  - express/manejo-de-errores
+  - produccion/configuracion
+  - seguridad/seguridad-de-apis
+resources:
+  - title: Zod — Documentación
+    url: https://zod.dev/
+  - title: Zod — Personalizar errores y locales
+    url: https://zod.dev/error-customization
+keywords: [zod, validación, schema, esquema, safeparse, coerce, transform, enum, iso date, mensajes en español, z.config]
+milestone: 5
+---
+
+## La idea
+
+Todo lo que llega de fuera (cuerpo, query string, parámetros, variables de entorno, archivos) es **no confiable**. <Term slug="zod">Zod</Term> te deja describir la forma esperada una vez y obtener validación, mensajes de error y datos limpios:
+
+```js
+import { z } from 'zod';
+
+const userSchema = z.object({
+  name: z.string().trim().min(2),
+  age: z.coerce.number().int().min(18),       // '42' (texto de la query) → 42
+  role: z.enum(['admin', 'editor']).default('editor'),
+});
+
+userSchema.parse({ name: '  Ana ', age: '42' });
+// → { name: 'Ana', age: 42, role: 'editor' }
+
+const result = userSchema.safeParse({ name: 'A', age: 'x' });
+result.success;         // false
+result.error.issues;    // [{ path: ['name'], message: … }, { path: ['age'], message: … }]
+```
+
+- `parse` lanza un error si no es válido; `safeParse` devuelve `{ success, data | error }`.
+- `z.coerce.*` convierte texto (query strings, variables de entorno) al tipo esperado.
+- `.transform()` convierte el valor tras validarlo; `.refine()` añade reglas propias.
+- **Los campos que no están en el schema se eliminan**: el cliente no puede colar `id` ni `isAdmin`.
+
+## Mensajes en español
+
+Zod 4 incluye traducciones. Actívalas una vez al arrancar:
+
+```js
+z.config(z.locales.es());
+// "Demasiado pequeño: se esperaba que texto tuviera >=2 caracteres"
+```
+
+## Validar en el handler
+
+Con un pequeño ayudante que convierte el fallo en un `ValidationError` (400), cada ruta empieza con una línea de validación y trabaja con datos ya seguros.
+
+## Errores comunes
+
+- **Validar solo el cuerpo**: `req.params.id` y `req.query.limit` también llegan del cliente.
+- **Valores por defecto en schemas de actualización**: con `.partial()`, Zod 4 sigue aplicando los `.default()`, y un `PATCH` que solo cambia el importe pondría la descripción a `''`. Define el schema de actualización sin defaults.
+- **Validar dentro del servicio y también en la ruta**: valida en la frontera (la ruta) y pasa al servicio datos ya tipados.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/lib/validation.js', 'src/expenses/expenses.schema.js', 'src/expenses/expenses.routes.js']}>
+
+Instala Zod y crea el ayudante de validación. Usa la clase `ValidationError` del hito 1 y convierte cada problema en `{ field, message }`:
+
+```bash
+npm install zod
+```
+
+<SourceFile path="src/lib/validation.js" />
+
+Define los schemas de los gastos. El importe acepta texto o número y **sale en céntimos** gracias a `transform` y a la función `toCents` que escribiste al principio de la guía:
+
+<SourceFile path="src/expenses/expenses.schema.js" />
+
+Cada ruta valida su entrada en la primera línea. Por ejemplo:
+
+```js title="src/expenses/expenses.routes.js"
+import { parse } from '../lib/validation.js';
+import { createExpenseSchema, idSchema } from './expenses.schema.js';
+
+router.post('/', async (req, res) => {
+  const data = parse(createExpenseSchema, req.body);
+  // data.amount ya es un entero en céntimos; data.category, una categoría válida
+});
+
+router.get('/:id', async (req, res) => {
+  const { id } = parse(idSchema, req.params); // '7' → 7; 'abc' → 400
+});
+```
+
+`readExpensesCsv` también puede usar `createExpenseSchema.safeParse(...)` en lugar de la validación manual del hito 3 (así queda en el [proyecto final](/docs/monedero/puesta-en-marcha)).
+
+Por ahora, un `ValidationError` lanzado aquí llega al manejador de errores **por defecto** de Express. Como el error tiene `status = 400`, el código es correcto, pero el cuerpo es una página HTML sin los detalles de cada campo. Lo arreglas en la siguiente lección.
+
+</ProjectStep>

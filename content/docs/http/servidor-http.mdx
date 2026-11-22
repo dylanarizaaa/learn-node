@@ -1,0 +1,125 @@
+---
+title: Un servidor con node:http
+sidebarTitle: Servidor HTTP
+description: createServer, los objetos req y res, responder JSON con las cabeceras correctas y escuchar en un puerto.
+difficulty: intermedio
+time: 15
+prerequisites:
+  - http/protocolo-http
+related:
+  - http/enrutamiento
+  - express/introduccion-a-express
+resources:
+  - title: Node.js — HTTP
+    url: https://nodejs.org/docs/latest/api/http.html
+  - title: Node.js — Anatomía de una transacción HTTP
+    url: https://nodejs.org/en/learn/modules/anatomy-of-an-http-transaction
+keywords: [http, createserver, request, response, req, res, writehead, end, listen, puerto, json, eaddrinuse]
+milestone: 4
+---
+
+## La idea
+
+`node:http` crea un servidor con una sola función: un *handler* que Node llama **por cada petición** con dos objetos:
+
+- `req` (`IncomingMessage`): método, URL, cabeceras… y el cuerpo, que es un **stream legible**.
+- `res` (`ServerResponse`): un **stream escribible** donde escribes el código, las cabeceras y el cuerpo.
+
+```js title="server.js"
+import { createServer } from 'node:http';
+
+const server = createServer((req, res) => {
+  console.log(req.method, req.url, req.headers['user-agent']);
+  res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+  res.end('Hola desde Node\n');
+});
+
+server.listen(3000, () => console.log('Escuchando en http://localhost:3000'));
+```
+
+```console
+$ curl localhost:3000/lo-que-sea
+Hola desde Node
+```
+
+El servidor no distingue rutas por sí solo: cualquier URL llega al mismo handler. Eso lo resuelves en la [siguiente lección](/docs/http/enrutamiento).
+
+## Responder JSON
+
+Para una API, convierte el objeto a texto y declara el tipo y el tamaño. `Content-Length` se mide en **bytes**, no en caracteres:
+
+```js
+function sendJson(res, status, data) {
+  const body = JSON.stringify(data);
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body),
+  });
+  res.end(body);
+}
+```
+
+## Errores comunes
+
+- **No llamar a `res.end()`**: el cliente se queda esperando hasta que salta un timeout.
+- **Escribir cabeceras después de empezar el cuerpo**: `ERR_HTTP_HEADERS_SENT`. Las cabeceras van primero; compruébalo con `res.headersSent`.
+- **`EADDRINUSE`**: el puerto ya está ocupado, normalmente por otra copia de tu servidor. Ciérrala o usa otro puerto.
+- **Errores sin capturar en un handler async**: tumban el proceso o dejan la petición colgada. Envuelve el handler en `try/catch` (lo harás en el proyecto).
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/http/respond.js', 'src/server.js', 'package.json']}>
+
+Crea el ayudante para responder JSON (lo ampliarás con `readJson` dentro de dos lecciones):
+
+```js title="src/http/respond.js"
+/** Envía `data` como JSON con el código de estado indicado. */
+export function sendJson(res, status, data) {
+  const body = JSON.stringify(data);
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body),
+  });
+  res.end(body);
+}
+```
+
+Y el primer servidor de Monedero, con un único endpoint de salud (versión intermedia):
+
+```js title="src/server.js"
+import { createServer } from 'node:http';
+import { sendJson } from './http/respond.js';
+
+const PORT = Number(process.env.PORT ?? 3000);
+
+const server = createServer((req, res) => {
+  if (req.method === 'GET' && req.url === '/api/health') {
+    return sendJson(res, 200, { status: 'ok', uptime: Math.round(process.uptime()) });
+  }
+  sendJson(res, 404, { error: { code: 'NOT_FOUND', message: `No existe la ruta ${req.method} ${req.url}` } });
+});
+
+server.listen(PORT, () => console.log(`Monedero escuchando en http://localhost:${PORT}`));
+```
+
+Añade un script para desarrollar con recarga automática:
+
+```json title="package.json"
+"scripts": {
+  "cli": "node --env-file-if-exists=.env bin/monedero.js",
+  "dev": "node --watch --env-file-if-exists=.env src/server.js"
+}
+```
+
+```console
+$ npm run dev
+Monedero escuchando en http://localhost:3000
+$ curl -i localhost:3000/api/health
+HTTP/1.1 200 OK
+Content-Type: application/json; charset=utf-8
+Content-Length: 26
+
+{"status":"ok","uptime":3}
+```
+
+</ProjectStep>

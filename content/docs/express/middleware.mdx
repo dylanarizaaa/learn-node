@@ -1,0 +1,109 @@
+---
+title: Middleware
+description: La cadena (req, res, next) — middleware globales, por router y por ruta, el orden de ejecución y cómo escribir los tuyos.
+difficulty: intermedio
+time: 15
+prerequisites:
+  - express/rutas-y-routers
+  - javascript/funciones-y-closures
+related:
+  - express/manejo-de-errores
+  - seguridad/rutas-protegidas
+  - calidad/logging
+resources:
+  - title: Express — Usar middleware
+    url: https://expressjs.com/en/guide/using-middleware.html
+  - title: Express — Escribir middleware
+    url: https://expressjs.com/en/guide/writing-middleware.html
+keywords: [middleware, next, app.use, cadena, orden, express.json, express.static, logger, fábrica de middleware]
+milestone: 5
+---
+
+## La idea
+
+Un <Term slug="middleware">middleware</Term> es una función `(req, res, next)` que Express ejecuta **antes** de la ruta. Puede:
+
+- leer o modificar `req` y `res` (añadir `req.user`, poner cabeceras);
+- responder y cortar la cadena (un 401, un 429);
+- o llamar a `next()` para pasar al siguiente.
+
+<Flow
+  steps={[
+    { title: 'Petición', tone: 'muted' },
+    { title: 'helmet', desc: 'cabeceras de seguridad' },
+    { title: 'logger', desc: 'mide y registra' },
+    { title: 'express.json', desc: 'rellena req.body' },
+    { title: 'Ruta', desc: 'responde', tone: 'brand' },
+  ]}
+  caption="Cada app.use() añade un eslabón. Se ejecutan en el orden en que se registran."
+/>
+
+## Dónde se aplica
+
+```js
+app.use(helmet());                                 // global: todas las peticiones
+app.use('/api/admin', requireAdmin, adminRouter);  // solo bajo un prefijo
+router.post('/', rateLimit({ max: 5 }), create);   // solo en una ruta
+```
+
+## Escribir middleware
+
+Para configurar un middleware, usa una **fábrica**: una función que recibe opciones y devuelve el middleware (una closure):
+
+```js
+function requireHeader(name) {
+  return (req, res, next) => {
+    if (!req.get(name)) return res.status(400).json({ error: `Falta la cabecera ${name}` });
+    next();
+  };
+}
+
+app.use('/api', requireHeader('X-Client-Version'));
+```
+
+Para hacer algo **después** de que la ruta responda (medir el tiempo, registrar el código), escucha el evento `'finish'` de `res`.
+
+## Errores comunes
+
+- **No llamar a `next()` ni responder**: la petición se queda colgada.
+- **Llamar a `next()` después de responder**: la siguiente ruta intentará responder otra vez.
+- **Registrar middleware después de las rutas**: no se ejecutará para ellas. `express.json()` debe ir antes de cualquier ruta que lea `req.body`.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/middleware/request-logger.js', 'src/app.js']}>
+
+Añade un registro de peticiones. Mide desde que entra la petición hasta que la respuesta termina (versión del hito 5; en el hito 8 la sustituirás por logs estructurados con pino):
+
+```js title="src/middleware/request-logger.js"
+/** Registra cada petición al terminar: método, ruta, estado y duración. */
+export function requestLogger(req, res, next) {
+  const start = performance.now();
+  res.on('finish', () => {
+    const ms = Math.round(performance.now() - start);
+    console.log(`${req.method} ${req.originalUrl} → ${res.statusCode} (${ms} ms)`);
+  });
+  next();
+}
+```
+
+```js title="src/app.js"
+import { requestLogger } from './middleware/request-logger.js'; // [!code ++]
+
+const app = express();
+app.use(requestLogger); // [!code ++]
+app.use(express.json({ limit: '100kb' }));
+app.use(express.static(join(import.meta.dirname, '..', 'public')));
+```
+
+```console
+$ npm run dev
+Monedero escuchando en http://localhost:3000
+POST /api/expenses → 201 (24 ms)
+GET /api/expenses/999 → 404 (2 ms)
+GET /api/health → 200 (1 ms)
+```
+
+El logger va **primero** para medir también el tiempo de parsear el cuerpo y de servir estáticos.
+
+</ProjectStep>

@@ -1,0 +1,112 @@
+---
+title: El protocolo HTTP
+description: Peticiones y respuestas, métodos, rutas, cabeceras, cuerpo y códigos de estado. Lo mínimo para diseñar y depurar una API.
+difficulty: principiante
+time: 15
+prerequisites:
+  - nucleo/streams
+related:
+  - http/servidor-http
+  - express/rutas-y-routers
+resources:
+  - title: MDN — Introducción a HTTP
+    url: https://developer.mozilla.org/es/docs/Web/HTTP/Guides/Overview
+  - title: MDN — Códigos de estado
+    url: https://developer.mozilla.org/es/docs/Web/HTTP/Reference/Status
+  - title: MDN — Métodos HTTP
+    url: https://developer.mozilla.org/es/docs/Web/HTTP/Reference/Methods
+keywords: [http, request, response, método, get, post, patch, delete, cabeceras, headers, status, código de estado, rest, curl, idempotente]
+milestone: 4
+---
+
+## La idea
+
+HTTP es texto con un formato fijo. El cliente envía una **petición** y el servidor contesta con una **respuesta**:
+
+```http
+POST /api/expenses HTTP/1.1
+Host: localhost:3000
+Content-Type: application/json
+Content-Length: 38
+
+{"amount":"12,50","category":"comida"}
+```
+
+```http
+HTTP/1.1 201 Created
+Content-Type: application/json; charset=utf-8
+
+{"id":1,"amount":1250,"category":"comida","date":"2026-11-22"}
+```
+
+Cada mensaje tiene una **línea inicial** (método y ruta, o código de estado), **cabeceras** (`Nombre: valor`), una línea en blanco y un **cuerpo** opcional.
+
+## Métodos
+
+En una <Term slug="api-rest">API REST</Term>, la URL identifica el recurso y el método, la acción:
+
+| Método | Acción | Ejemplo | <Term slug="idempotencia">Idempotente</Term> |
+| --- | --- | --- | --- |
+| `GET` | Leer | `GET /api/expenses/7` | Sí |
+| `POST` | Crear | `POST /api/expenses` | No |
+| `PATCH` | Modificar en parte | `PATCH /api/expenses/7` | No* |
+| `PUT` | Reemplazar entero | `PUT /api/expenses/7` | Sí |
+| `DELETE` | Borrar | `DELETE /api/expenses/7` | Sí |
+
+Idempotente significa que repetirla deja el sistema igual que hacerla una vez: si un `DELETE` se reintenta por un corte de red, no pasa nada.
+
+## Códigos de estado
+
+| Código | Significado | Cuándo |
+| --- | --- | --- |
+| `200 OK` | Éxito | Lecturas y modificaciones |
+| `201 Created` | Recurso creado | Tras un `POST` |
+| `204 No Content` | Éxito sin cuerpo | Tras un `DELETE` |
+| `400 Bad Request` | Datos inválidos | Falta un campo, formato incorrecto |
+| `401 Unauthorized` | No autenticado | Falta el token o caducó |
+| `403 Forbidden` | Autenticado sin permiso | Recurso de otra persona |
+| `404 Not Found` | No existe | Ruta o id desconocido |
+| `409 Conflict` | Conflicto de estado | Email ya registrado |
+| `413` / `415` | Cuerpo muy grande / tipo no soportado | Subidas y formatos |
+| `429 Too Many Requests` | Demasiadas peticiones | Límite superado |
+| `500 Internal Server Error` | Fallo del servidor | Un error que no esperabas |
+
+Regla rápida: **4xx es culpa del cliente** (puede corregir y reintentar); **5xx es culpa del servidor**.
+
+## Cabeceras habituales
+
+- `Content-Type`: formato del cuerpo (`application/json`, `text/csv`, `text/html`).
+- `Content-Length`: tamaño del cuerpo en bytes.
+- `Authorization`: credenciales (`Bearer <token>`).
+- `Accept`: formatos que el cliente acepta en la respuesta.
+- `Cache-Control`, `ETag`: caché.
+
+## Errores comunes
+
+- Responder `200` con `{ "error": "..." }`: los clientes, proxies y herramientas confían en el código. Usa el código correcto.
+- Usar `GET` para acciones que cambian datos: navegadores y buscadores repiten los `GET` sin preguntar.
+- Verbos en las URLs (`/api/createExpense`): el verbo ya es el método.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['README.md']}>
+
+Empieza el hito 4 diseñando la API **antes** de programarla. Apunta en el `README.md` qué endpoints tendrá esta primera versión:
+
+| Método | Ruta | Respuesta |
+| --- | --- | --- |
+| `GET` | `/api/health` | `200` con `{ status: 'ok' }` |
+| `GET` | `/api/expenses?month=AAAA-MM` | `200` con la lista del mes |
+| `GET` | `/api/expenses/summary?month=AAAA-MM` | `200` con los totales por categoría |
+| `POST` | `/api/expenses` | `201` con el gasto creado; `400` si los datos no son válidos |
+
+Y familiarízate con `curl`, la herramienta con la que probarás la API desde la terminal. `-i` muestra la línea de estado y las cabeceras:
+
+```console
+$ curl -i https://example.com
+HTTP/2 200
+content-type: text/html
+…
+```
+
+</ProjectStep>
