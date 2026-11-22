@@ -10,6 +10,7 @@ import { summarize } from '../domain/expenses.js';
  */
 export function buildYearlyReport(year, expenses) {
   const months = Array.from({ length: 12 }, (_, i) => `${year}-${String(i + 1).padStart(2, '0')}`);
+  /** @type {Map<string, typeof expenses>} */
   const byMonth = new Map(months.map((month) => [month, []]));
   for (const expense of expenses) byMonth.get(expense.date.slice(0, 7))?.push(expense);
 
@@ -17,7 +18,10 @@ export function buildYearlyReport(year, expenses) {
   const yearly = summarize(expenses);
   const activeMonths = monthly.filter((m) => m.count > 0).length;
   const [topCategory] = Object.entries(yearly.byCategory).sort((a, b) => b[1] - a[1]);
-  const largest = expenses.reduce((max, e) => (max === null || e.amount > max.amount ? e : max), null);
+  const largest = expenses.reduce(
+    (max, e) => (max === null || e.amount > max.amount ? e : max),
+    /** @type {(typeof expenses)[number] | null} */ (null),
+  );
 
   return {
     year,

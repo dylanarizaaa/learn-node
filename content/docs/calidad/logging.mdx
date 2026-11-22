@@ -1,0 +1,123 @@
+---
+title: Logs estructurados
+description: Por qué console.log no basta en un servidor, logs JSON con pino, niveles, loggers hijos con contexto y qué no registrar nunca.
+difficulty: intermedio
+time: 15
+prerequisites:
+  - express/middleware
+related:
+  - avanzado/async-local-storage
+  - produccion/observabilidad
+resources:
+  - title: pino — Documentación
+    url: https://getpino.io/
+  - title: OWASP — Logging Cheat Sheet
+    url: https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html
+keywords: ["logs", "logging", "pino", "json", "niveles", "child logger", "request id", "pino-pretty", "console.log", "redact"]
+milestone: 8
+---
+
+## La idea
+
+En tu máquina, `console.log('Gasto creado', id)` es suficiente. En producción, con miles de peticiones por minuto, necesitas **buscar y filtrar**: «todos los errores de la petición `a7b7…`», «peticiones de más de 500 ms». Para eso los logs deben ser **estructurados**: una línea JSON por evento, con campos.
+
+```json
+{"level":30,"time":1795325492411,"requestId":"c157…","method":"POST","url":"/api/expenses","status":201,"ms":6,"msg":"petición atendida"}
+```
+
+## pino
+
+`pino` es el logger más usado en Node por su rendimiento: escribe JSON y deja el formateo a herramientas externas.
+
+```js
+import pino from 'pino';
+
+const logger = pino({ level: process.env.LOG_LEVEL ?? 'info' });
+
+logger.info('Servidor arrancado');
+logger.info({ port: 3000 }, 'Escuchando');       // primero el objeto, después el mensaje
+logger.error({ err: error }, 'Fallo al guardar'); // `err` serializa mensaje, tipo y traza
+logger.debug('Solo si LOG_LEVEL=debug');
+
+const log = logger.child({ requestId: 'a7b7' });  // todo lo que registre incluye requestId
+```
+
+Niveles, de menos a más grave: `trace`, `debug`, `info`, `warn`, `error`, `fatal`. En producción se suele usar `info`; en los tests, `silent`.
+
+Para leerlos cómodamente en desarrollo, `pino-pretty` los colorea (como devDependency: en producción se queda en JSON).
+
+## Qué registrar y qué no
+
+- **Sí**: cada petición (método, ruta, estado, duración, id), errores con su traza, eventos de negocio importantes, arranque y parada.
+- **Nunca**: contraseñas, tokens, cabeceras `Authorization`, datos de tarjetas, documentos de identidad. pino tiene la opción `redact` para tachar rutas concretas por si acaso.
+
+## Errores comunes
+
+- Concatenar datos en el mensaje (`'Usuario ' + id + ' creó…'`): no se puede filtrar por campo. Pasa un objeto.
+- Registrar errores esperados (un 404, una validación fallida) como `error`: llenan las alertas de ruido. Son `info` o `warn`, o nada.
+- `console.log` dentro de bucles calientes: en un servidor con carga, escribir en la consola de forma síncrona penaliza.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/lib/logger.js', 'src/middleware/request-context.js', 'src/app.js', 'src/server.js']}>
+
+Instala pino y crea el logger. `pino-pretty` solo se carga en desarrollo:
+
+```bash
+npm install pino
+npm install -D pino-pretty
+```
+
+<SourceFile path="src/lib/logger.js" lines="1-15" />
+
+(La importación de `context.js` y la función `currentLogger` del final del archivo llegan en el hito 9.)
+
+Sustituye el `requestLogger` del hito 5 por un middleware que asigna a cada petición un **id** (o reutiliza el del proxy en `X-Request-Id`), crea un logger hijo con él y lo deja en `req.log`. Versión del hito 8; en [AsyncLocalStorage](/docs/avanzado/async-local-storage) le añadirás una línea:
+
+```js title="src/middleware/request-context.js"
+import { randomUUID } from 'node:crypto';
+
+const VALID_ID = /^[\w-]{1,64}$/;
+
+export function requestContextMiddleware(logger) {
+  return (req, res, next) => {
+    const incoming = req.get('x-request-id');
+    const requestId = incoming && VALID_ID.test(incoming) ? incoming : randomUUID();
+    const log = logger.child({ requestId });
+    const start = performance.now();
+
+    req.log = log;
+    res.set('X-Request-Id', requestId);
+    res.on('finish', () => {
+      log.info(
+        { method: req.method, url: req.originalUrl, status: res.statusCode, ms: Math.round(performance.now() - start) },
+        'petición atendida',
+      );
+    });
+    next();
+  };
+}
+```
+
+El id que llega de fuera se valida: aceptar cualquier texto permitiría inyectar líneas falsas en los logs.
+
+```js title="src/app.js"
+app.use(requestLogger); // [!code --]
+app.use(requestContextMiddleware(logger)); // [!code ++]
+```
+
+```js title="src/server.js"
+import { createLogger } from './lib/logger.js'; // [!code ++]
+const logger = createLogger({ level: process.env.LOG_LEVEL ?? 'info', pretty: process.env.NODE_ENV === 'development' }); // [!code ++]
+const app = createApp({ db, logger }); // [!code ++]
+```
+
+El manejador de errores del hito 5 ya usaba `(req.log ?? logger).error({ err: error }, …)`: sin tocarlo, sus errores llevan ahora el `requestId`. En los tests, el ayudante crea la app con `pino({ level: 'silent' })`.
+
+```console
+$ NODE_ENV=production npm start
+{"level":30,"time":1795325490609,"pid":1033,"hostname":"vm","msg":"Monedero escuchando en http://localhost:3000 (pid 1033)"}
+{"level":30,"time":1795325492411,"pid":1033,"hostname":"vm","requestId":"c157472a-e0ca-4a14-8528-f6fca6c7abfc","method":"POST","url":"/api/expenses","status":201,"ms":6,"msg":"petición atendida"}
+```
+
+</ProjectStep>

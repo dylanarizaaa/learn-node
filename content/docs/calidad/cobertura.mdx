@@ -1,0 +1,87 @@
+---
+title: Cobertura de código
+description: Medir qué líneas y ramas ejecutan los tests con --experimental-test-coverage, leer el informe y usarlo sin obsesionarse con el 100 %.
+difficulty: intermedio
+time: 10
+prerequisites:
+  - calidad/tests-de-integracion
+related:
+  - produccion/ci-cd
+resources:
+  - title: Node.js — Cobertura en el test runner
+    url: https://nodejs.org/docs/latest/api/test.html#collecting-code-coverage
+keywords: ["cobertura", "coverage", "experimental-test-coverage", "líneas", "ramas", "branches", "lcov", "umbral"]
+milestone: 8
+---
+
+## La idea
+
+La **cobertura** mide qué partes del código se ejecutaron durante los tests. Node la calcula sin herramientas externas:
+
+```bash
+node --test --experimental-test-coverage
+```
+
+El informe da tres porcentajes por archivo:
+
+- **Líneas** (`line %`): qué líneas se ejecutaron al menos una vez.
+- **Ramas** (`branch %`): qué caminos de cada `if`, `??`, `? :`, `catch`… se recorrieron.
+- **Funciones** (`funcs %`): qué funciones se llamaron.
+
+Y la columna `uncovered lines` dice exactamente qué líneas no se probaron.
+
+## Cómo usarla
+
+La cobertura es buena para **encontrar huecos**, no para medir calidad. Un 100 % no significa que el código esté bien probado (puedes ejecutar una línea sin comprobar su resultado); un 60 % sí indica que hay comportamiento sin probar.
+
+Mira las líneas no cubiertas y pregúntate: «¿si esto falla, me enteraría?». A menudo son caminos de error: justo los que más duelen en producción.
+
+```bash
+# Excluir los propios tests del informe y exigir un mínimo (falla si no se alcanza)
+node --test --experimental-test-coverage \
+  --test-coverage-exclude="test/**" \
+  --test-coverage-lines=90 \
+  "test/**/*.test.js"
+
+# Informe lcov para herramientas externas (Codecov, VS Code…)
+node --test --experimental-test-coverage --test-reporter=lcov --test-reporter-destination=lcov.info
+```
+
+## Errores comunes
+
+- Escribir tests sin aserciones solo para subir el porcentaje.
+- Fijar un umbral del 100 %: el equipo acabará escribiendo tests inútiles para cubrir líneas triviales.
+- Ignorar las ramas: un 100 % de líneas con un 50 % de ramas suele esconder casos de error sin probar.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['package.json']}>
+
+Añade el script y mira el informe de Monedero:
+
+```json title="package.json"
+"test:coverage": "node --test --experimental-test-coverage \"test/**/*.test.js\""
+```
+
+```console
+$ npm run test:coverage
+ℹ start of coverage report
+ℹ file                       | line % | branch % | funcs % | uncovered lines
+ℹ   csv.js                   |  97.50 |    81.58 |  100.00 | 88-90
+ℹ   database.js              |  92.50 |    60.00 |  100.00 | 37-39
+ℹ   migrate.js               |  81.63 |    71.43 |   75.00 | 37-39 44-49
+ℹ   health.js                |  84.75 |    80.00 |   75.00 | 27-29 50-55
+ℹ   error-handler.js         |  95.24 |    75.00 |  100.00 | 37-38
+ℹ   users.repository.js      |  94.87 |    66.67 |  100.00 | 25-26
+ℹ …
+ℹ all files                  |  97.85 |    89.66 |   96.30 |
+ℹ end of coverage report
+```
+
+Lee los huecos con criterio:
+
+- `database.js 37-39` es el `ROLLBACK` de una transacción: se ejecuta en la importación de CSV que falla… pero esa ruta valida antes y nunca llega a la transacción. Un test del repositorio con un dato que viola el `CHECK` lo cubriría.
+- `migrate.js 44-49` es el bloque `import.meta.main`, que solo se ejecuta como script: no merece un test.
+- `error-handler.js 37-38` es el error 500 genérico. Vale la pena: es lo que verá un cliente cuando algo falle de verdad. Es uno de los [retos](/docs/monedero/retos).
+
+</ProjectStep>

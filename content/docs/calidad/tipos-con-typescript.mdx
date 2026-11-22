@@ -1,0 +1,112 @@
+---
+title: Tipos con TypeScript
+description: Dos caminos para tener tipos en Node — comprobar JavaScript con JSDoc y tsc, o ejecutar archivos .ts directamente gracias al type stripping.
+difficulty: intermedio
+time: 15
+prerequisites:
+  - calidad/test-runner
+related:
+  - javascript/funciones-y-closures
+  - produccion/ci-cd
+resources:
+  - title: Node.js — Módulos TypeScript
+    url: https://nodejs.org/docs/latest/api/typescript.html
+  - title: TypeScript — JSDoc Reference
+    url: https://www.typescriptlang.org/docs/handbook/jsdoc-supported-types.html
+keywords: ["typescript", "type stripping", ".ts", "jsdoc", "checkJs", "tsc", "noEmit", "erasableSyntaxOnly", "tipos", "jsconfig"]
+milestone: 8
+---
+
+## La idea
+
+Los tipos detectan antes de ejecutar errores como pasar un texto donde se esperaba un número o leer una propiedad que no existe. En Node tienes dos caminos, y los dos evitan un paso de compilación:
+
+<Columns>
+  <Column title="JavaScript + JSDoc">
+    Escribes `.js` con comentarios de tipo y `tsc` **solo comprueba**. El código que se ejecuta es exactamente el que escribes. Ideal para adoptar tipos poco a poco.
+  </Column>
+  <Column title="Archivos .ts" tone="brand">
+    Node ejecuta `.ts` directamente (*type stripping*): borra las anotaciones y ejecuta el resto. `tsc --noEmit` comprueba los tipos aparte (en el editor y en CI).
+  </Column>
+</Columns>
+
+## Type stripping
+
+Desde Node 22.18 (y en Node 24 y 26), esto funciona sin flags:
+
+```ts title="saludo.ts"
+interface User {
+  name: string;
+  age: number;
+}
+
+export function greet(user: User): string {
+  return `Hola, ${user.name}`;
+}
+
+console.log(greet({ name: 'Ana', age: 30 }));
+```
+
+```console
+$ node saludo.ts
+Hola, Ana
+```
+
+Node **no comprueba** los tipos: `greet({ name: 42 })` se ejecuta igual. Y solo admite sintaxis que se pueda *borrar*: nada de `enum`, `namespace` ni parámetros con modificadores en constructores. Las importaciones llevan la extensión `.ts` y los tipos se importan con `import type`. Activa `"erasableSyntaxOnly": true` en `tsconfig.json` para que el editor te avise.
+
+## JSDoc
+
+Los mismos tipos, en comentarios:
+
+```js
+/**
+ * @param {{ name: string, age: number }} user
+ * @returns {string}
+ */
+export function greet(user) {
+  return `Hola, ${user.name}`;
+}
+```
+
+Con `// @ts-check` al principio de un archivo, VS Code ya te marca los errores. Para comprobarlo en la terminal o en CI, usa `tsc` con `checkJs`.
+
+## Errores comunes
+
+- Pensar que `node archivo.ts` valida los tipos: solo los borra. Ejecuta `tsc --noEmit` en CI.
+- Usar `any` para callar al compilador: pierdes justo lo que buscabas.
+- Querer tipar todo el primer día: empieza por los módulos puros y ve ampliando.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['jsconfig.json', 'package.json', 'src/reports/yearly-report.js']}>
+
+Monedero sigue en JavaScript, pero desde el hito 1 sus funciones tienen JSDoc. Actívalo para los módulos puros con un `jsconfig.json`:
+
+<SourceFile path="jsconfig.json" />
+
+```bash
+npm install -D typescript
+npm pkg set scripts.typecheck="tsc -p jsconfig.json"
+```
+
+La primera ejecución encontró dos problemas reales en el informe anual:
+
+```console
+$ npm run typecheck
+src/reports/yearly-report.js(14,79): error TS2345: Argument of type '{ amount: number; category: string; date: string; }' is not assignable to parameter of type 'never'.
+src/reports/yearly-report.js(20,79): error TS2339: Property 'amount' does not exist on type 'never'.
+```
+
+Un `Map` creado con arrays vacíos (`[]`) y un `reduce` que empieza con `null` no le dan a TypeScript información suficiente. Se resuelven indicando el tipo con JSDoc:
+
+<SourceFile path="src/reports/yearly-report.js" lines="11-24" />
+
+```console
+$ npm run typecheck
+$ echo $?
+0
+```
+
+Añade `npm run typecheck` a la integración continua (hito 10) y amplía el `include` del `jsconfig.json` a medida que añadas JSDoc a más archivos. **Hito 8 completo**: tests, cobertura, logs estructurados, depuración y tipos.
+
+</ProjectStep>

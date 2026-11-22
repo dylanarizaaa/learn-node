@@ -1,0 +1,123 @@
+---
+title: El test runner de Node
+description: Tests sin instalar nada con node:test y node:assert — describe/it, hooks, aserciones, filtros, modo watch y reporters.
+difficulty: intermedio
+time: 15
+prerequisites:
+  - express/arquitectura-por-capas
+related:
+  - calidad/tests-de-integracion
+  - calidad/mocks
+resources:
+  - title: Node.js — Test runner
+    url: https://nodejs.org/docs/latest/api/test.html
+  - title: Node.js — Assert
+    url: https://nodejs.org/docs/latest/api/assert.html
+keywords: ["node:test", "node --test", "describe", "it", "assert", "assert/strict", "deepEqual", "throws", "rejects", "before", "after", "watch", "test unitario"]
+milestone: 8
+---
+
+## La idea
+
+Node trae su propio framework de tests: `node:test` para declararlos, `node:assert` para comprobar resultados y `node --test` para ejecutarlos. No hay que instalar ni configurar nada.
+
+```js title="test/suma.test.js"
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+
+function sum(a, b) {
+  return a + b;
+}
+
+describe('sum', () => {
+  it('suma dos números', () => {
+    assert.equal(sum(2, 3), 5);
+  });
+
+  it('no se confunde con decimales… o sí', () => {
+    assert.notEqual(sum(0.1, 0.2), 0.3);
+  });
+});
+```
+
+```console
+$ node --test
+▶ sum
+  ✔ suma dos números (0.4ms)
+  ✔ no se confunde con decimales… o sí (0.1ms)
+✔ sum (1.2ms)
+ℹ tests 2
+ℹ pass 2
+ℹ fail 0
+```
+
+Sin argumentos, `node --test` busca archivos como `*.test.js` o los que estén en una carpeta `test/`. Cada archivo se ejecuta en **su propio proceso**, así que los tests de archivos distintos no se pisan.
+
+## Aserciones más usadas
+
+Importa siempre `node:assert/strict` (compara con `===` y comprueba también los prototipos).
+
+| Aserción | Comprueba |
+| --- | --- |
+| `assert.equal(a, b)` | `a === b` |
+| `assert.deepEqual(a, b)` | Objetos o arrays con el mismo contenido |
+| `assert.ok(valor)` | Que sea *truthy* |
+| `assert.match(texto, /regex/)` | Que el texto encaje |
+| `assert.throws(() => fn(), RangeError)` | Que la función lance ese tipo de error |
+| `await assert.rejects(promesa)` | Que la promesa se rechace |
+
+## Opciones útiles
+
+```bash
+node --test --watch                         # repite al guardar
+node --test --test-name-pattern="toCents"   # solo los tests cuyo nombre encaja
+node --test "test/**/*.test.js"             # archivos concretos (glob)
+node --test --test-reporter=spec            # formato legible aunque no sea una terminal
+```
+
+Dentro del código: `it.only(...)` (con `--test-only`), `it.skip(...)` e `it.todo(...)`. Hooks: `before`, `after`, `beforeEach`, `afterEach`.
+
+## Qué probar primero
+
+Las **funciones puras** del dominio: no necesitan base de datos ni red, se prueban en milisegundos y concentran las reglas del negocio. Por eso escribirlas así en el hito 1 sale a cuenta ahora.
+
+## Errores comunes
+
+- Tests que dependen del orden o del estado que deja otro test: cada test debe preparar lo que necesita.
+- Probar la implementación en lugar del comportamiento (qué funciones internas se llamaron, en vez de qué devuelve).
+- Olvidar el `await` en un test asíncrono: el test termina antes de comprobar nada y pasa en verde.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['test/money.test.js', 'test/domain.test.js', 'package.json']}>
+
+Empieza el hito 8 con tests de las funciones puras. Incluye un test que documenta **por qué** existen los céntimos:
+
+<SourceFile path="test/money.test.js" />
+
+<SourceFile path="test/domain.test.js" lines="1-43" />
+
+Añade los scripts. El glob evita que `node --test` ejecute como test el archivo de ayudantes que crearás en la siguiente lección:
+
+```json title="package.json"
+"scripts": {
+  "test": "node --test \"test/**/*.test.js\""
+}
+```
+
+```console
+$ npm test -- --test-reporter=spec test/money.test.js
+▶ toCents
+  ✔ acepta coma o punto decimal y números (0.883151ms)
+  ✔ evita los errores de coma flotante (0.150965ms)
+  ✔ rechaza importes no válidos (1.50665ms)
+✔ toCents (3.65384ms)
+▶ formatCents
+  ✔ formatea en la moneda y el idioma indicados (35.621083ms)
+✔ formatCents (35.787555ms)
+ℹ tests 4
+ℹ pass 4
+ℹ fail 0
+```
+
+</ProjectStep>

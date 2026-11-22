@@ -1,0 +1,75 @@
+---
+title: Mocks y dobles de prueba
+description: Sustituir dependencias en los tests con mock.fn, mock.method y relojes falsos con mock.timers — y cuándo es mejor no usar mocks.
+difficulty: intermedio
+time: 15
+prerequisites:
+  - calidad/test-runner
+related:
+  - calidad/tests-de-integracion
+  - express/arquitectura-por-capas
+resources:
+  - title: Node.js — Mocking en el test runner
+    url: https://nodejs.org/docs/latest/api/test.html#mocking
+  - title: Node.js — mock.timers
+    url: https://nodejs.org/docs/latest/api/test.html#class-mocktimers
+keywords: ["mock", "doble de prueba", "mock.fn", "mock.method", "mock.timers", "spy", "stub", "fake", "inyección de dependencias", "date"]
+milestone: 8
+---
+
+## La idea
+
+Un <Term slug="mock">doble de prueba</Term> sustituye una dependencia real para controlar qué devuelve y comprobar cómo se usó. `node:test` incluye `mock`:
+
+```js
+import { mock } from 'node:test';
+
+const sendEmail = mock.fn(async () => ({ id: 'msg-1' }));   // función falsa
+await sendEmail('ana@example.com', 'Hola');
+
+sendEmail.mock.callCount();                 // 1
+sendEmail.mock.calls[0].arguments;          // ['ana@example.com', 'Hola']
+
+mock.method(console, 'warn', () => {});     // reemplaza un método existente (y lo silencia)
+mock.restoreAll();                          // deja todo como estaba
+```
+
+## Controlar el tiempo
+
+El código que depende de la fecha o de temporizadores es difícil de probar. `mock.timers` sustituye `Date`, `setTimeout` y `setInterval` por un reloj que tú controlas:
+
+```js
+mock.timers.enable({ apis: ['Date', 'setTimeout'], now: new Date('2026-11-22T12:00:00Z') });
+new Date().toISOString();   // '2026-11-22T12:00:00.000Z'
+mock.timers.tick(60_000);   // avanza un minuto y dispara los timers vencidos
+mock.timers.reset();
+```
+
+Otra opción, a menudo más simple: **inyectar el reloj**. El limitador de peticiones de Monedero recibe `now = Date.now` como parámetro; el test le pasa `() => time` y cambia `time` a voluntad.
+
+## Cuándo no usar mocks
+
+Los mocks prueban que tu código **llama** a sus dependencias de cierta forma, no que el conjunto funcione. Si mockeas la base de datos en todos los tests, nunca descubrirás que una consulta SQL está mal. Regla práctica:
+
+- **Mockea** lo lento, caro o no determinista: servicios externos (pagos, email), el reloj, la aleatoriedad.
+- **No mockees** lo que puedes usar de verdad barato: SQLite en memoria es casi tan rápido como un mock y prueba el SQL real.
+
+## Errores comunes
+
+- Olvidar restaurar (`mock.restoreAll()` o `mock.timers.reset()`): el siguiente test hereda el mock. Usa `try/finally` o `afterEach`.
+- Mocks que reimplementan media dependencia: señal de que necesitas un test de integración.
+- Mockear módulos enteros cuando bastaría con inyectar la dependencia.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['test/expenses.service.test.js', 'test/security.test.js']}>
+
+Prueba el servicio de gastos **sin base de datos**: recibe un repositorio falso hecho con `mock.fn`. Gracias a la inyección de dependencias del hito 5, no hay que tocar ningún import. El reloj se congela con `mock.timers` para comprobar que, sin fecha, se usa la de hoy:
+
+<SourceFile path="test/expenses.service.test.js" />
+
+Y el limitador de peticiones, con un reloj inyectado y objetos `req`/`res` mínimos (no hace falta Express para probar un middleware):
+
+<SourceFile path="test/security.test.js" lines="36-52" />
+
+</ProjectStep>

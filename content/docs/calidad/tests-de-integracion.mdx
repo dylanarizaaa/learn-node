@@ -1,0 +1,69 @@
+---
+title: Tests de integración
+description: Probar la API real por HTTP con una base de datos en memoria y un puerto aleatorio — sin librerías extra, con fetch y node:test.
+difficulty: intermedio
+time: 18
+prerequisites:
+  - calidad/test-runner
+  - http/fetch
+related:
+  - calidad/mocks
+  - produccion/ci-cd
+resources:
+  - title: Node.js — Test runner, hooks
+    url: https://nodejs.org/docs/latest/api/test.html#beforefn-options
+  - title: Martin Fowler — The Practical Test Pyramid
+    url: https://martinfowler.com/articles/practical-test-pyramid.html
+keywords: ["test de integración", "api", "fetch", "puerto 0", "base de datos en memoria", "before", "after", "supertest", "aislamiento"]
+milestone: 8
+---
+
+## La idea
+
+Un test unitario prueba una función aislada. Un **test de integración** prueba varias piezas juntas: en una API, la petición HTTP real atravesando middleware, validación, servicio, repositorio y base de datos. Es el test que más confianza da, porque usa la aplicación como la usará un cliente.
+
+Para que sean rápidos y fiables, cada test (o grupo de tests) necesita:
+
+1. **Una base de datos propia y limpia**: con SQLite, `':memory:'`; con PostgreSQL, una base de datos de pruebas o transacciones que se deshacen.
+2. **Un puerto libre**: `listen(0)` pide al sistema operativo un puerto cualquiera; después lo lees con `server.address().port`.
+3. **Cerrar todo al terminar** (`after`): servidor y base de datos. Si algo queda abierto, el proceso del test no termina.
+
+<Callout type="info" title="¿Y supertest?">
+Es la librería clásica para esto. Con `fetch` global y `listen(0)` ya no hace falta: el ayudante de abajo hace lo mismo en 70 líneas, y sabes exactamente qué hace.
+</Callout>
+
+## Por qué `createApp` recibe sus dependencias
+
+Aquí se cobra la decisión del hito 5: como `createApp({ config, db, logger })` no lee variables de entorno ni abre la base de datos por su cuenta, el test puede construir una aplicación **idéntica a la real** con una base de datos en memoria, un logger silencioso y un secreto de pruebas.
+
+## Errores comunes
+
+- Compartir una base de datos entre archivos de test: resultados distintos según el orden de ejecución.
+- Tests que dependen de la fecha actual sin fijarla (un test del «mes actual» que falla el día 1).
+- Comprobar solo el código de estado: comprueba también el cuerpo, al menos los campos importantes.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['test/helpers.js', 'test/api.test.js']}>
+
+El ayudante arranca Monedero completo en un puerto libre con SQLite en memoria y expone una función `request` que devuelve el JSON ya parseado:
+
+<SourceFile path="test/helpers.js" />
+
+Los tests usan un servidor por bloque `describe`, creado en `before` y cerrado en `after`. Estos prueban el CRUD, la validación y el aislamiento entre usuarios:
+
+<SourceFile path="test/api.test.js" lines="75-136" />
+
+```console
+$ npm test
+…
+ℹ tests 37
+ℹ suites 18
+ℹ pass 37
+ℹ fail 0
+ℹ duration_ms 3104.753443
+```
+
+Con estos tests, el script de humo del hito 4 (`scripts/smoke.js`) ya no aporta nada: puedes borrarlo. Los tests del archivo completo cubren también la autenticación, el CSV, los informes y los eventos; los verás en las lecciones de esas funcionalidades.
+
+</ProjectStep>

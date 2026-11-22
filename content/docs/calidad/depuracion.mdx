@@ -1,0 +1,85 @@
+---
+title: Depuración
+description: Más allá de console.log — el inspector de Node con Chrome DevTools y VS Code, breakpoints, depurar tests y opciones de diagnóstico útiles.
+difficulty: intermedio
+time: 12
+prerequisites:
+  - calidad/test-runner
+related:
+  - avanzado/rendimiento
+  - calidad/logging
+resources:
+  - title: Node.js — Depuración
+    url: https://nodejs.org/en/learn/getting-started/debugging
+  - title: VS Code — Depurar Node.js
+    url: https://code.visualstudio.com/docs/nodejs/nodejs-debugging
+keywords: ["depuración", "debug", "inspector", "--inspect", "--inspect-brk", "breakpoint", "debugger", "chrome devtools", "vs code", "launch.json", "trace-warnings", "console.dir"]
+milestone: 8
+---
+
+## La idea
+
+`console.log` sirve para dudas rápidas. Para entender un fallo de verdad, usa el **depurador**: para el programa en una línea, inspecciona variables, recorre la pila de llamadas y avanza paso a paso.
+
+```bash
+node --inspect src/server.js        # arranca con el inspector en el puerto 9229
+node --inspect-brk src/server.js    # igual, pero se detiene en la primera línea
+node --inspect-brk --test test/api.test.js   # depurar un test
+```
+
+Después, conéctate:
+
+- **Chrome**: abre `chrome://inspect` y pulsa *inspect* en tu proceso.
+- **VS Code**: abre una *JavaScript Debug Terminal* (paleta de comandos) y ejecuta cualquier comando de Node ahí: se conecta solo, incluso a `npm test`.
+
+En el código, la sentencia `debugger;` actúa como un breakpoint cuando hay un depurador conectado (y no hace nada si no lo hay).
+
+## Herramientas de diagnóstico
+
+```bash
+node --trace-warnings app.js          # muestra la traza de cada warning
+node --trace-uncaught app.js          # dónde se lanzó una excepción no capturada
+NODE_DEBUG=http,net node app.js       # registros internos de módulos de Node
+node --stack-trace-limit=50 app.js    # trazas más largas
+```
+
+Y para imprimir objetos anidados completos: `console.dir(objeto, { depth: null })`.
+
+## Errores comunes
+
+- Dejar `--inspect` activo en producción y expuesto a la red: cualquiera que llegue al puerto 9229 puede ejecutar código en tu proceso. Si alguna vez lo necesitas, enlázalo solo a `127.0.0.1`.
+- Depurar a base de añadir y quitar `console.log` durante una hora: diez minutos con el depurador suelen bastar.
+- Olvidar que `--inspect-brk` espera a que te conectes: el programa «se cuelga» hasta entonces.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['.vscode/launch.json']}>
+
+Añade configuraciones de VS Code para depurar el servidor y el archivo de test abierto con F5:
+
+```json title=".vscode/launch.json"
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Servidor",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/server.js",
+      "runtimeArgs": ["--env-file-if-exists=.env"],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Test actual",
+      "type": "node",
+      "request": "launch",
+      "runtimeArgs": ["--test", "${file}"],
+      "console": "integratedTerminal"
+    }
+  ]
+}
+```
+
+Practica: pon un breakpoint en `summary()` de `src/expenses/expenses.service.js`, lanza **Test actual** con `test/expenses.service.test.js` abierto y mira cómo `rows` (que viene del repositorio falso) se convierte en `byCategory`.
+
+</ProjectStep>

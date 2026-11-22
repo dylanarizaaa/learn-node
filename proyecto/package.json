@@ -18,7 +18,8 @@
     "cli": "node --env-file-if-exists=.env bin/monedero.js",
     "test": "node --test \"test/**/*.test.js\"",
     "test:coverage": "node --test --experimental-test-coverage \"test/**/*.test.js\"",
-    "audit:prod": "npm audit --omit=dev --audit-level=high"
+    "audit:prod": "npm audit --omit=dev --audit-level=high",
+    "typecheck": "tsc -p jsconfig.json"
   },
   "dependencies": {
     "express": "^5.3.0",
@@ -28,6 +29,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "pino-pretty": "^13.2.0"
+    "pino-pretty": "^13.2.0",
+    "typescript": "^7.0.2"
   }
 }
