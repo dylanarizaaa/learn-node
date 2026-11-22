@@ -1,0 +1,108 @@
+---
+title: Rendimiento
+description: Medir antes de optimizar — pruebas de carga con autocannon, perfiles de CPU, planes de consulta con EXPLAIN y el índice que multiplicó por 18 el rendimiento de Monedero.
+difficulty: avanzado
+time: 18
+prerequisites:
+  - avanzado/event-loop-a-fondo
+  - datos/consultas-y-paginacion
+related:
+  - avanzado/cluster
+  - calidad/depuracion
+resources:
+  - title: autocannon
+    url: https://github.com/mcollina/autocannon
+  - title: Node.js — Perfilar aplicaciones
+    url: https://nodejs.org/en/learn/getting-started/profiling
+  - title: SQLite — EXPLAIN QUERY PLAN
+    url: https://www.sqlite.org/eqp.html
+keywords: ["rendimiento", "performance", "autocannon", "benchmark", "prueba de carga", "cpu-prof", "perfil", "explain query plan", "índice", "latencia", "percentiles"]
+milestone: 9
+---
+
+## Mide primero
+
+La intuición sobre qué es lento suele fallar. El proceso:
+
+1. **Mide** con una carga realista y anota la línea base.
+2. **Localiza** el cuello de botella (perfil de CPU, plan de la consulta, retraso del event loop).
+3. **Cambia una sola cosa** y vuelve a medir.
+
+## Pruebas de carga con autocannon
+
+```bash
+npx autocannon -c 50 -d 10 http://localhost:3000/api/health
+#                ↑ conexiones  ↑ segundos
+```
+
+Mira **peticiones por segundo** y la **latencia por percentiles** (p50, p99). La media esconde los casos lentos; el p99 es lo que sufre el 1 % de tus usuarios en cada petición.
+
+## ¿Dónde se va el tiempo?
+
+```bash
+node --cpu-prof src/server.js      # al salir, escribe un .cpuprofile
+```
+
+Ábrelo en Chrome DevTools (pestaña *Performance*) o en VS Code: verás qué funciones consumen la CPU. Para mediciones puntuales en el código, `performance.now()` y `performance.mark()`/`measure()` de `node:perf_hooks`.
+
+## Planes de consulta
+
+Con bases de datos, el sospechoso habitual es una consulta que **recorre la tabla entera**. `EXPLAIN QUERY PLAN` dice qué hará SQLite:
+
+```console
+SCAN expenses                                        ← lee todas las filas
+SEARCH expenses USING INDEX expenses_user_date (…)   ← va directo a las que necesita
+```
+
+Un **índice** es una estructura ordenada (como el índice de un libro) que permite encontrar filas sin leerlas todas. A cambio, ocupa espacio y hace las escrituras algo más lentas: crea índices para las consultas frecuentes, no para todas las columnas. Para consultas que filtran por varias columnas, el **orden** importa: un índice `(user_id, date)` sirve para `user_id = ? AND date BETWEEN …`.
+
+## Errores comunes
+
+- Optimizar sin medir, o medir en modo desarrollo (con `pino-pretty`, `--watch`…).
+- Lanzar la herramienta de carga en la misma máquina sin tenerlo en cuenta al leer los números.
+- Cachear para tapar una consulta sin índice: añade complejidad e invalidaciones en lugar de arreglar la causa.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/db/migrations/003-index-expenses-user-date.sql']}>
+
+Este experimento se hizo con Monedero: 20 usuarios, 200 000 gastos y 50 conexiones simultáneas pidiendo el resumen de un mes. Primero, el plan de la consulta de totales **sin índice**:
+
+```console
+$ node -e "…EXPLAIN QUERY PLAN SELECT category, SUM(amount) … WHERE user_id = 1 AND date BETWEEN '2025-06-01' AND '2025-06-30' GROUP BY category"
+[ 'SCAN expenses', 'USE TEMP B-TREE FOR GROUP BY' ]
+```
+
+Cada resumen lee las 200 000 filas: unos 10 ms de CPU por consulta. Como `node:sqlite` es síncrono, esos 10 ms **bloquean el event loop**, y con 50 clientes la cola se dispara:
+
+```console
+$ npx autocannon -c 50 -d 8 -H "authorization=Bearer $TOKEN" "http://localhost:3000/api/expenses/summary?month=2025-06"
+│ Latency │ 269 ms │ 544 ms │ 655 ms │ 662 ms │ 545.34 ms │ 78.66 ms │ 674 ms │
+│ Req/Sec   │ 79      │ 79      │ 88      │ 96     │ 88.5    │ 5.2     │ 79      │
+758 requests in 8.03s, 758 kB read
+```
+
+Casi todas las consultas filtran por usuario y rango de fechas, así que una migración nueva añade un índice compuesto:
+
+<SourceFile path="src/db/migrations/003-index-expenses-user-date.sql" />
+
+```console
+[ 'SEARCH expenses USING INDEX expenses_user_date (user_id=? AND date>? AND date<?)', 'USE TEMP B-TREE FOR GROUP BY' ]
+```
+
+La consulta baja de ~10 ms a ~0,25 ms, y la API entera lo nota:
+
+```console
+│ Latency │ 23 ms │ 28 ms │ 49 ms │ 52 ms │ 30.33 ms │ 6.73 ms │ 93 ms │
+│ Req/Sec   │ 1,103   │ 1,103   │ 1,617   │ 1,894   │ 1,618.75 │ 234.44 │ 1,103   │
+13k requests in 8.02s, 13.9 MB read
+```
+
+| | Sin índice | Con índice |
+| --- | --- | --- |
+| Peticiones/s | 88 | 1 619 (×18) |
+| Latencia media | 545 ms | 30 ms |
+
+Una línea de SQL. Y fíjate en que la migración se aplica sola al arrancar: así llega a producción con el siguiente despliegue.
+
+</ProjectStep>

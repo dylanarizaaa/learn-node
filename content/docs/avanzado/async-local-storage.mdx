@@ -1,0 +1,83 @@
+---
+title: AsyncLocalStorage
+description: Contexto por petición sin pasar parámetros — requestId y logger accesibles desde cualquier capa, incluso después de un await.
+difficulty: avanzado
+time: 12
+prerequisites:
+  - calidad/logging
+  - javascript/async-await
+related:
+  - produccion/observabilidad
+resources:
+  - title: Node.js — AsyncLocalStorage
+    url: https://nodejs.org/docs/latest/api/async_context.html#class-asynclocalstorage
+keywords: ["asynclocalstorage", "async_hooks", "contexto", "request id", "correlación", "trazas", "run", "getstore"]
+milestone: 9
+---
+
+## El problema
+
+Quieres que **todos** los logs de una petición lleven su `requestId`, incluidos los que escribe el servicio o el repositorio. Opciones:
+
+- Pasar `req` o el logger como parámetro a cada función: contamina capas que no deberían saber nada de HTTP.
+- Una variable global: con cientos de peticiones intercaladas por el event loop, se mezclarían.
+
+## La idea
+
+<Term slug="asynclocalstorage">AsyncLocalStorage</Term> guarda un valor que viaja con la **cadena asíncrona**: todo lo que se ejecute dentro de `run()`, directa o indirectamente, y también después de cualquier `await`, `setTimeout` o callback, ve ese valor. Otra petición, con su propio `run()`, ve el suyo.
+
+```js
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+const context = new AsyncLocalStorage();
+
+function logSomething() {
+  console.log('petición', context.getStore()?.id); // sin parámetros
+}
+
+context.run({ id: 'A' }, async () => {
+  await new Promise((r) => setTimeout(r, 10));
+  logSomething(); // 'petición A'
+});
+context.run({ id: 'B' }, () => logSomething()); // 'petición B'
+```
+
+## Usos típicos
+
+- Id de petición y logger con contexto.
+- Id del usuario o del *tenant* para auditoría.
+- Trazas distribuidas (OpenTelemetry lo usa por debajo).
+
+## Errores comunes
+
+- Usarlo para pasar datos de negocio entre funciones: dependencias implícitas difíciles de seguir. Resérvalo para preocupaciones transversales (logs, trazas).
+- Llamar a `getStore()` fuera de cualquier `run()`: devuelve `undefined`. Ten siempre un valor por defecto.
+- Iniciar el contexto después de middleware que encolan trabajo por su cuenta: inicia el `run()` lo antes posible en la cadena.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/lib/context.js', 'src/middleware/request-context.js', 'src/lib/logger.js']}>
+
+Crea el contexto de petición en un módulo propio:
+
+<SourceFile path="src/lib/context.js" />
+
+En el middleware del hito 8 cambia una sola línea: en lugar de `next()`, ejecuta el resto de la cadena dentro del contexto:
+
+```js title="src/middleware/request-context.js"
+next(); // [!code --]
+// Todo lo que ocurra a partir de aquí (incluso tras un await) ve este contexto. // [!code ++]
+requestContext.run({ requestId, log }, next); // [!code ++]
+```
+
+El archivo completo queda así:
+
+<SourceFile path="src/middleware/request-context.js" />
+
+Y añade al logger una función para obtener el de la petición en curso desde cualquier sitio:
+
+<SourceFile path="src/lib/logger.js" lines="17-25" />
+
+Desde un servicio o un repositorio, `currentLogger(logger).info(…)` escribe con el `requestId` de la petición que lo llamó, sin que esa capa sepa que existe HTTP. Un buen sitio para probarlo: registrar cuánto tarda el worker del informe anual.
+
+</ProjectStep>

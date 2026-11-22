@@ -1,0 +1,98 @@
+---
+title: Worker threads
+description: Ejecutar JavaScript en otros hilos para el trabajo de CPU — Worker, workerData, mensajes, transferencias, timeouts y pools.
+difficulty: avanzado
+time: 18
+prerequisites:
+  - avanzado/event-loop-a-fondo
+related:
+  - avanzado/procesos-hijos
+  - proyectos/cola-de-trabajos
+resources:
+  - title: Node.js — Worker threads
+    url: https://nodejs.org/docs/latest/api/worker_threads.html
+  - title: Piscina — pool de workers
+    url: https://github.com/piscinajs/piscina
+keywords: ["worker threads", "worker", "workerdata", "postmessage", "parentport", "hilos", "cpu", "transferlist", "sharedarraybuffer", "piscina", "pool"]
+milestone: 9
+---
+
+## La idea
+
+Un <Term slug="worker-thread">worker thread</Term> es otro hilo con su **propio event loop y su propia instancia de V8**. Mientras calcula, el hilo principal sigue atendiendo peticiones.
+
+```js title="main.js"
+import { Worker } from 'node:worker_threads';
+
+const worker = new Worker(new URL('./primes.worker.js', import.meta.url), {
+  workerData: { limit: 5_000_000 },
+});
+worker.once('message', (count) => console.log(`${count} primos`));
+worker.once('error', (error) => console.error(error));
+```
+
+```js title="primes.worker.js"
+import { parentPort, workerData } from 'node:worker_threads';
+
+let count = 0;
+for (let n = 2; n < workerData.limit; n++) {
+  let prime = true;
+  for (let d = 2; d * d <= n; d++) if (n % d === 0) { prime = false; break; }
+  if (prime) count++;
+}
+parentPort.postMessage(count);
+```
+
+## Comunicación
+
+- Los datos que envías (`workerData`, `postMessage`) se **copian** con el algoritmo de clonado estructurado: funciona con objetos, arrays, `Map`, `Date`, Buffers… pero no con funciones ni clases con métodos.
+- Copiar 100 MB tarda: para datos binarios grandes, **transfiérelos** (`postMessage(buffer, [buffer])`) y dejan de estar disponibles en el hilo origen.
+- Para memoria realmente compartida existe `SharedArrayBuffer` con `Atomics`, pero rara vez lo necesitarás.
+
+## ¿Cuándo usarlos?
+
+<Columns>
+  <Column title="Sí" tone="good">
+    Cálculo intensivo: informes, compresión, procesado de imágenes, hash de muchos archivos, parseo de JSON enormes.
+  </Column>
+  <Column title="No" tone="bad">
+    E/S: leer archivos, consultas, peticiones HTTP. Node ya las hace en segundo plano; un worker solo añade coste.
+  </Column>
+</Columns>
+
+Crear un worker cuesta decenas de milisegundos y memoria. Si lanzas muchos, usa un **pool** que los reutiliza (la librería `piscina` es la referencia).
+
+## Errores comunes
+
+- Crear un worker por petición sin límite: cien peticiones simultáneas, cien hilos.
+- Olvidar el evento `'error'`: una excepción en el worker no aparece en ningún sitio.
+- Pasar funciones o instancias de clase en `workerData`: lanza `DataCloneError`.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/reports/yearly-report.js', 'src/reports/report.worker.js', 'src/reports/reports.js', 'src/app.js']}>
+
+Monedero calcula un **informe anual**: totales por mes y categoría, media mensual, categoría principal y gasto más alto. El cálculo es una función pura que reutiliza `summarize` del hito 1:
+
+<SourceFile path="src/reports/yearly-report.js" />
+
+El worker es mínimo: recibe los datos, llama a la función y devuelve el resultado:
+
+<SourceFile path="src/reports/report.worker.js" />
+
+Y una función envuelve el worker en una promesa con **tiempo límite**, más la ruta que lo usa:
+
+<SourceFile path="src/reports/reports.js" />
+
+```js title="src/app.js"
+app.use('/api/reports', requireAuth, reportsRouter({ expenses })); // [!code ++]
+```
+
+```console
+$ curl -s localhost:3000/api/reports/2026 -H "Authorization: Bearer $TOKEN" | head -c 120
+{"year":2026,"count":4,"total":7049,"monthlyAverage":7049,"topCategory":"hogar","largest":{"id":3,"amount":4000,…
+```
+
+Con unos pocos gastos, el worker es más lento que calcular en el hilo principal (crearlo tarda más que el cálculo). Su valor aparece con años de datos o cálculos más pesados; es el patrón lo que importa. Para Monedero en producción, un pool como `piscina` sería el siguiente paso.
+
+</ProjectStep>

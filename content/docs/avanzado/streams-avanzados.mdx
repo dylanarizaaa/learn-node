@@ -1,0 +1,104 @@
+---
+title: Streams avanzados
+description: Backpressure, highWaterMark, generadores como streams, y cómo transmitir una consulta de base de datos directamente a la respuesta HTTP.
+difficulty: avanzado
+time: 18
+prerequisites:
+  - nucleo/streams
+  - datos/node-sqlite
+related:
+  - avanzado/event-loop-a-fondo
+  - datos/transacciones
+resources:
+  - title: Node.js — Backpressure en streams
+    url: https://nodejs.org/en/learn/modules/backpressuring-in-streams
+  - title: Node.js — stream.pipeline
+    url: https://nodejs.org/docs/latest/api/stream.html#streampipelinesource-transforms-destination-options
+keywords: ["backpressure", "highwatermark", "drain", "write", "pipeline", "generadores", "readable.from", "iterate", "streaming", "csv", "export"]
+milestone: 9
+---
+
+## Backpressure
+
+Imagina que lees un archivo a 1 GB/s y lo envías a un cliente que descarga a 1 MB/s. Si no hubiera freno, los datos se acumularían en memoria hasta agotarla. La <Term slug="backpressure">backpressure</Term> es ese freno:
+
+- Cada stream tiene un búfer con un tamaño orientativo, `highWaterMark` (16 KiB para bytes, 16 objetos en modo objeto).
+- `writable.write(chunk)` devuelve `false` cuando el búfer está lleno: **deja de escribir** hasta el evento `'drain'`.
+- `pipeline` y `for await` lo gestionan por ti: el productor solo avanza cuando el consumidor pide más.
+
+```js
+// A mano (para entenderlo; en la práctica, usa pipeline)
+for (const line of lines) {
+  if (!res.write(line)) await once(res, 'drain'); // espera a que el cliente consuma
+}
+res.end();
+```
+
+## Generadores como fuente
+
+Un generador produce valores **bajo demanda**: el siguiente no se calcula hasta que alguien lo pide. Combinado con `Readable.from`, es la forma más simple de crear un stream con backpressure:
+
+```js
+function* numbers(limit) {
+  for (let i = 0; i < limit; i++) yield `${i}\n`;  // nada se calcula por adelantado
+}
+
+await pipeline(Readable.from(numbers(1e9)), createWriteStream('numeros.txt'));
+```
+
+Y como etapas intermedias de `pipeline` puedes usar **funciones generadoras asíncronas**:
+
+```js
+await pipeline(
+  createReadStream('datos.csv'),
+  csvParser(),
+  async function* (rows) {
+    for await (const { record } of rows) if (record.categoria === 'ocio') yield record;
+  },
+  saveToDatabase,
+);
+```
+
+## De la base de datos al cliente, fila a fila
+
+`statement.iterate()` de `node:sqlite` devuelve un iterador que lee **una fila cada vez**. Encadenado con `Readable.from`, un transform CSV y la respuesta HTTP, exportas un millón de filas con memoria constante: la base de datos avanza al ritmo de la red.
+
+## Errores comunes
+
+- `stream.on('data', …)` sin pausar cuando el destino va lento: ignora la backpressure.
+- Acumular en un array dentro del `for await` «para luego escribirlo»: deshace la ventaja del streaming.
+- No cerrar la respuesta si el pipeline falla a mitad: `pipeline` destruye todas las etapas, pero el cliente recibirá un archivo cortado (las cabeceras ya se enviaron). Avísalo en logs.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/expenses/expenses.repository.js', 'src/expenses/expenses.service.js', 'src/expenses/expenses.routes.js']}>
+
+Lleva el comando `export` de la CLI a la API. El repositorio expone un **generador** que recorre las filas con `iterate()`:
+
+<SourceFile path="src/expenses/expenses.repository.js" lines="29-32" />
+
+<SourceFile path="src/expenses/expenses.repository.js" lines="105-108" />
+
+El servicio lo expone para un mes:
+
+```js title="src/expenses/expenses.service.js"
+/** Gastos de un mes como iterador perezoso (para exportar en streaming). */
+iterateMonth(userId, month = currentMonth()) {
+  return repository.iterate(userId, monthRange(month));
+},
+```
+
+Y la ruta encadena base de datos → CSV → red, reutilizando el `expensesToCsv` del hito 3. `attachment()` añade la cabecera `Content-Disposition` para que el navegador lo descargue como archivo:
+
+<SourceFile path="src/expenses/expenses.routes.js" lines="41-46" />
+
+```console
+$ curl -OJ "localhost:3000/api/expenses/export.csv?month=2026-11" -H "Authorization: Bearer $TOKEN"
+$ head -2 gastos-2026-11.csv
+fecha,importe,categoria,descripcion
+2026-11-03,40.00,hogar,Luz
+```
+
+La importación ya era streaming desde el hito 6: `readExpensesCsv(req)` lee el cuerpo de la petición por trozos. Así, Monedero mueve CSV de cualquier tamaño en ambas direcciones.
+
+</ProjectStep>

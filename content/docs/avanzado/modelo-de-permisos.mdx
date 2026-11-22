@@ -1,0 +1,82 @@
+---
+title: El modelo de permisos
+description: Restringir qué puede hacer tu proceso de Node — archivos, procesos hijos, workers y red — con --permission, y sus límites actuales.
+difficulty: avanzado
+time: 12
+prerequisites:
+  - seguridad/seguridad-de-apis
+  - avanzado/worker-threads
+related:
+  - produccion/docker
+  - avanzado/procesos-hijos
+resources:
+  - title: Node.js — Permissions
+    url: https://nodejs.org/docs/latest/api/permissions.html
+keywords: ["permisos", "permission model", "--permission", "--allow-fs-read", "--allow-fs-write", "--allow-worker", "--allow-child-process", "mínimo privilegio", "sandbox", "supply chain"]
+milestone: 9
+---
+
+## La idea
+
+Por defecto, un proceso de Node puede hacer todo lo que pueda el usuario que lo ejecuta: leer tu carpeta personal, lanzar programas, abrir hilos. Si una dependencia comprometida se cuela en tu proyecto, también podrá. El **modelo de permisos** aplica el principio de mínimo privilegio: con `--permission`, todo está prohibido salvo lo que permitas explícitamente.
+
+```bash
+node --permission \
+  --allow-fs-read=/app \
+  --allow-fs-write=/app/data \
+  --allow-worker \
+  src/server.js
+```
+
+| Opción | Permite |
+| --- | --- |
+| `--allow-fs-read=<ruta>` | Leer archivos bajo esa ruta (incluido el propio código) |
+| `--allow-fs-write=<ruta>` | Escribir bajo esa ruta |
+| `--allow-worker` | Crear worker threads |
+| `--allow-child-process` | Lanzar procesos hijos |
+| `--allow-addons` | Cargar módulos nativos |
+
+Desde el código puedes consultar un permiso con `process.permission.has('fs.write', '/tmp')`.
+
+## Sus límites
+
+- Es una **capa más**, no un sandbox: protege de errores y de código no intencionado, no de un atacante con control total del proceso. Las conexiones de red aún no se restringen en las versiones LTS actuales.
+- No cubre todas las APIs. En Node 22 comprobamos que `node:sqlite` abre y crea archivos aunque no exista `--allow-fs-write` para esa ruta. Verifica el comportamiento en tu versión antes de confiar en él.
+- Complementa (no sustituye) al aislamiento del sistema: usuario sin privilegios, contenedor con sistema de archivos de solo lectura, red restringida.
+
+## Errores comunes
+
+- Dar `--allow-fs-read=*` «para que funcione»: anula buena parte de la protección.
+- Olvidar que el código de `node_modules` también necesita poder leerse.
+- Probar solo el camino feliz: los permisos que faltan aparecen en rutas poco usadas (informes, exportaciones).
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['package.json']}>
+
+Ejecuta Monedero con permisos mínimos: leer la carpeta del proyecto y escribir solo en `data/`:
+
+```console
+$ node --permission --allow-fs-read="$PWD" --allow-fs-write="$PWD/data" --env-file=.env src/server.js
+$ curl -s localhost:3000/api/health
+{"status":"ok","version":"1.0.0","uptime":2,"memoryMb":71,"eventLoopDelayMs":0.17}
+$ curl -s localhost:3000/api/reports/2026 -H "Authorization: Bearer $TOKEN"
+{"error":{"code":"INTERNAL_ERROR","message":"Error interno del servidor"}}
+```
+
+Dos efectos, y los dos son informativos:
+
+- `version` es `1.0.0` y no el commit: lanzar `git` no está permitido, y el `catch` de `detectVersion` hace su trabajo.
+- El informe anual falla. El log lo explica: `Access to this API has been restricted. Use --allow-worker to manage permissions.`
+
+Añade `--allow-worker` y guárdalo como script:
+
+```json title="package.json"
+"start:secure": "node --permission --allow-fs-read=. --allow-fs-write=./data --allow-worker --env-file-if-exists=.env src/server.js"
+```
+
+Al arrancar, Node muestra `SecurityWarning: The flag --allow-worker must be used with extreme caution`: un worker hereda los permisos del proceso, pero es una puerta más que abrir. Si el informe no te compensa ese riesgo, la alternativa es calcularlo en el hilo principal por lotes.
+
+**Hito 9 completo**: Monedero emite eventos en tiempo real, calcula informes en otro hilo, usa todos los núcleos, sigue cada petición en los logs y sabes medir y mejorar su rendimiento.
+
+</ProjectStep>

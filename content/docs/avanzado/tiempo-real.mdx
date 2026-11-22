@@ -1,0 +1,101 @@
+---
+title: Tiempo real con SSE y WebSockets
+description: Polling, Server-Sent Events y WebSockets — cómo funciona cada uno, cuándo elegirlo y cómo enviar eventos a cada usuario sin fugas de memoria.
+difficulty: avanzado
+time: 18
+prerequisites:
+  - nucleo/eventos
+  - seguridad/rutas-protegidas
+related:
+  - proyectos/chat-en-tiempo-real
+  - avanzado/cluster
+resources:
+  - title: MDN — Server-Sent Events
+    url: https://developer.mozilla.org/es/docs/Web/API/Server-sent_events/Using_server-sent_events
+  - title: ws — WebSockets para Node
+    url: https://github.com/websockets/ws
+  - title: MDN — WebSocket
+    url: https://developer.mozilla.org/es/docs/Web/API/WebSocket
+keywords: ["tiempo real", "sse", "server-sent events", "eventsource", "websocket", "ws", "polling", "heartbeat", "text/event-stream", "push"]
+milestone: 9
+---
+
+## Tres formas de enterarse de los cambios
+
+| Técnica | Cómo funciona | Úsala cuando |
+| --- | --- | --- |
+| Polling | El cliente pregunta cada N segundos | Los cambios son raros y la latencia da igual |
+| <Term slug="sse">SSE</Term> | Una respuesta HTTP que no termina; el servidor escribe eventos | El servidor avisa al cliente (notificaciones, progreso, paneles) |
+| <Term slug="websocket">WebSocket</Term> | Canal bidireccional persistente | Ambos lados envían a menudo (chat, juegos, edición colaborativa) |
+
+## Server-Sent Events
+
+Es HTTP normal con un formato de texto muy simple. Cada evento son líneas `campo: valor` terminadas por una línea en blanco:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: text/event-stream
+
+: esto es un comentario (se usa como latido)
+
+event: expense.created
+data: {"id":7,"amount":1250}
+
+```
+
+En el navegador se consumen con `new EventSource(url)`, que además **reconecta solo** si se corta. En Node puedes leerlos con `fetch` y el `body` como stream.
+
+## WebSockets
+
+Empiezan como una petición HTTP con `Upgrade: websocket` y, a partir de ahí, la conexión transporta mensajes en los dos sentidos. Node incluye un **cliente** `WebSocket` global; para el **servidor**, la librería estándar es `ws`:
+
+```js
+import { WebSocketServer } from 'ws';
+
+const wss = new WebSocketServer({ server }); // comparte el servidor HTTP
+wss.on('connection', (socket) => {
+  socket.on('message', (data) => {
+    for (const client of wss.clients) client.send(data.toString()); // difunde a todos
+  });
+});
+```
+
+Lo verás completo en el proyecto [Chat en tiempo real](/docs/proyectos/chat-en-tiempo-real).
+
+## Lo que no puedes olvidar
+
+- **Limpiar al desconectar**: cada conexión añade listeners a tu bus de eventos. Si no los quitas en `'close'`, la memoria crece con cada cliente que pasó por ahí.
+- **Latidos**: proxies y balanceadores cortan conexiones inactivas (a menudo a los 60 s). Envía un comentario o un *ping* cada 20–30 s.
+- **Autorización por evento**: cada cliente debe recibir solo lo suyo.
+- **Varias instancias**: un `EventEmitter` vive en un proceso. Con [cluster](/docs/avanzado/cluster) o varias máquinas necesitas un bus compartido (Redis pub/sub, PostgreSQL `LISTEN/NOTIFY`).
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/events/sse.js', 'src/app.js', 'src/server.js']}>
+
+El bus de eventos que creaste en el hito 2 ya recibe `expense.created`, `expense.updated`, `expense.deleted` y `expense.imported` desde el servicio. Solo falta un endpoint que los reenvíe a cada usuario por SSE:
+
+<SourceFile path="src/events/sse.js" />
+
+Móntalo detrás de la autenticación:
+
+```js title="src/app.js"
+app.get('/api/events', requireAuth, sseHandler(events)); // [!code ++]
+```
+
+`createApp` recibe `events` desde `server.js` para que el apagado ordenado del hito 10 pueda emitir `shutdown` y cerrar estas conexiones. Pruébalo con dos terminales:
+
+```console
+$ curl -N localhost:3000/api/events -H "Authorization: Bearer $TOKEN"
+: conectado
+
+event: expense.created
+data: {"id":8,"amount":300,"category":"salud","description":"","date":"2026-11-22","createdAt":"2026-11-22T06:40:11.093Z"}
+
+```
+
+(`-N` desactiva el búfer de curl para ver cada evento al llegar.) Y en el test de integración, `fetch` lee la respuesta como stream:
+
+<SourceFile path="test/api.test.js" lines="177-194" />
+
+</ProjectStep>

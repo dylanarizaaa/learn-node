@@ -1,0 +1,74 @@
+---
+title: Cluster y escalado
+description: Usar todos los núcleos con node:cluster, reiniciar workers caídos, qué estado deja de funcionar al tener varios procesos y alternativas en producción.
+difficulty: avanzado
+time: 15
+prerequisites:
+  - avanzado/worker-threads
+  - datos/migraciones
+related:
+  - produccion/despliegue
+  - avanzado/rendimiento
+resources:
+  - title: Node.js — Cluster
+    url: https://nodejs.org/docs/latest/api/cluster.html
+  - title: Node.js — os.availableParallelism
+    url: https://nodejs.org/docs/latest/api/os.html#osavailableparallelism
+keywords: ["cluster", "escalado", "núcleos", "cpu", "fork", "availableparallelism", "estado compartido", "redis", "pm2", "balanceo"]
+milestone: 9
+---
+
+## La idea
+
+Un proceso de Node ejecuta tu JavaScript en un núcleo. En una máquina de 8 núcleos, 7 están ociosos. El módulo <Term slug="cluster">cluster</Term> arranca **varias copias** del servidor que comparten el mismo puerto: el proceso principal acepta las conexiones y las reparte entre los workers.
+
+<Layers
+  layers={[
+    { title: 'Proceso principal', desc: 'cluster.isPrimary', items: ['fork()', 'reparte conexiones', 'reinicia caídos'], tone: 'brand' },
+    { title: 'Workers', desc: 'un proceso por núcleo', items: ['server.js', 'server.js', 'server.js', 'server.js'] },
+    { title: 'Recursos compartidos', desc: 'fuera de los procesos', items: ['base de datos', 'Redis'], tone: 'muted' },
+  ]}
+/>
+
+Worker threads y cluster resuelven problemas distintos: los **threads** sacan un cálculo puntual del hilo principal; el **cluster** multiplica la capacidad de atender peticiones.
+
+## El estado en memoria deja de ser compartido
+
+Cada worker es un proceso con su propia memoria. Todo lo que guardabas en variables pasa a estar **repetido y desincronizado**:
+
+- El **limitador de peticiones** en memoria: con 4 workers, el límite real es 4 veces mayor.
+- El **bus de eventos**: un gasto creado en el worker A no llega a los clientes SSE conectados al worker B.
+- Cachés y sesiones en memoria.
+
+La solución es sacar ese estado a un servicio compartido: Redis (contadores, pub/sub), la base de datos, etc.
+
+## Errores comunes
+
+- Ejecutar migraciones en cada worker sin bloqueo: varios procesos intentando crear la misma tabla.
+- Arrancar más workers que núcleos: compiten entre ellos y empeora.
+- Usar cluster dentro de un contenedor al que el orquestador ya replica: en Kubernetes o similares, lo habitual es **un proceso por contenedor** y escalar el número de contenedores.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/cluster.js', 'package.json']}>
+
+Añade un punto de entrada en modo cluster. El principal arranca un worker por núcleo (o los que diga `WORKERS`), los reemplaza si mueren y, al recibir una señal, se la reenvía para que cada uno haga su apagado ordenado:
+
+<SourceFile path="src/cluster.js" />
+
+```json title="package.json"
+"start:cluster": "node --env-file-if-exists=.env src/cluster.js"
+```
+
+Las migraciones son seguras con varios procesos gracias al `BEGIN IMMEDIATE` que pusiste en el hito 6: el primero las aplica y el resto ve que ya no queda nada pendiente. SQLite en modo WAL admite varios procesos leyendo y uno escribiendo.
+
+Medido en una máquina de 4 núcleos con 200 000 gastos, `autocannon` con 50 conexiones contra `/api/expenses/summary` (el propio autocannon comparte los mismos 4 núcleos):
+
+| Modo | Peticiones/s | Latencia media |
+| --- | --- | --- |
+| Un proceso | 1 619 | 30 ms |
+| Cluster, 4 workers | 4 208 | 11 ms |
+
+Ten presentes las limitaciones: en modo cluster, el límite de peticiones y los eventos SSE solo funcionan dentro de cada worker. Resolverlo con Redis es uno de los [retos](/docs/monedero/retos).
+
+</ProjectStep>

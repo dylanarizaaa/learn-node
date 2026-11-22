@@ -1,0 +1,84 @@
+---
+title: El event loop a fondo
+description: Qué se ejecuta en el pool de hilos de libuv, cómo medir si el event loop está bloqueado y las técnicas para no bloquearlo.
+difficulty: avanzado
+time: 15
+prerequisites:
+  - nucleo/event-loop
+related:
+  - avanzado/worker-threads
+  - avanzado/rendimiento
+resources:
+  - title: Node.js — No bloquees el event loop ni el pool de hilos
+    url: https://nodejs.org/en/learn/asynchronous-work/dont-block-the-event-loop
+  - title: Node.js — perf_hooks.monitorEventLoopDelay
+    url: https://nodejs.org/docs/latest/api/perf_hooks.html#perf_hooksmonitoreventloopdelayoptions
+keywords: ["event loop", "libuv", "thread pool", "UV_THREADPOOL_SIZE", "monitoreventloopdelay", "bloqueo", "lag", "setimmediate", "particionar", "perf_hooks"]
+milestone: 9
+---
+
+## Dos recursos que compartes
+
+Un proceso de Node tiene **un hilo** para JavaScript y un **pool de hilos** de libuv (4 por defecto) para operaciones que el sistema operativo no ofrece de forma asíncrona:
+
+| Va al pool de hilos | No usa el pool (E/S del sistema) |
+| --- | --- |
+| `fs.*` (lectura y escritura de archivos) | Sockets TCP/HTTP |
+| `dns.lookup` (resolución de nombres) | Temporizadores |
+| `crypto.scrypt`, `pbkdf2`, `randomBytes` grandes | Pipes y señales |
+| `zlib` asíncrono | |
+
+Si llegan diez logins a la vez y cada `scrypt` tarda 300 ms, los cuatro hilos se ocupan y el resto espera, **y con ellos cualquier lectura de archivo**. Puedes ampliar el pool con la variable `UV_THREADPOOL_SIZE` (por ejemplo, `UV_THREADPOOL_SIZE=8`), siempre antes de arrancar.
+
+## Medir el bloqueo
+
+El síntoma de un event loop bloqueado: todo va lento a la vez, incluso las rutas triviales como `/health`. `perf_hooks` lo mide de forma continua con un histograma de retrasos:
+
+```js
+import { monitorEventLoopDelay } from 'node:perf_hooks';
+
+const histogram = monitorEventLoopDelay({ resolution: 20 });
+histogram.enable();
+
+setInterval(() => {
+  console.log(`p99: ${(histogram.percentile(99) / 1e6).toFixed(1)} ms`); // nanosegundos → ms
+  histogram.reset();
+}, 5000).unref();
+```
+
+Valores de unos pocos milisegundos son normales; decenas o cientos indican que algo acapara el hilo.
+
+## Técnicas para no bloquear
+
+1. **Usa las versiones asíncronas** (nunca `*Sync` dentro de un servidor).
+2. **Pagina y transmite** en lugar de procesar todo de golpe (streams, `LIMIT`).
+3. **Particiona** el trabajo largo: procesa en lotes y cede el turno con `await setImmediate()` (de `node:timers/promises`) entre lote y lote.
+4. **Saca el cálculo pesado** a un [worker thread](/docs/avanzado/worker-threads).
+5. **Cuidado con las expresiones regulares** con cuantificadores anidados (`(a+)+`): con ciertas entradas tardan exponencialmente (ReDoS).
+
+## Errores comunes
+
+- Medir solo el tiempo medio de respuesta: el bloqueo aparece en los percentiles altos (p99).
+- Subir `UV_THREADPOOL_SIZE` para «arreglar» un event loop bloqueado: son recursos distintos.
+- `JSON.parse` / `JSON.stringify` de objetos de decenas de MB en una petición: bloquean igual que un bucle.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/health.js']}>
+
+Empieza el hito 9 haciendo visible el estado del event loop. Crea `src/health.js` con el histograma (el campo `version` usa un proceso hijo que verás en [Procesos hijos](/docs/avanzado/procesos-hijos)):
+
+<SourceFile path="src/health.js" lines="1-13" />
+
+<SourceFile path="src/health.js" lines="32-59" />
+
+El histograma mide el intervalo entre muestras completo, así que se resta la resolución para quedarse con el **retraso** real. Con el servidor en reposo verás valores cercanos a cero:
+
+```console
+$ curl localhost:3000/api/health
+{"status":"ok","version":"1.0.0","uptime":2,"memoryMb":71,"eventLoopDelayMs":0.17}
+```
+
+Monta el router en `createApp` en lugar de la ruta de salud del hito 5: `app.use('/api', healthRouter({ db }))`. En [Rendimiento](/docs/avanzado/rendimiento) verás este número dispararse con una consulta sin índice.
+
+</ProjectStep>

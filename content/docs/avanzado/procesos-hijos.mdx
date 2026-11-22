@@ -1,0 +1,78 @@
+---
+title: Procesos hijos
+description: Ejecutar otros programas desde Node con spawn, execFile y fork — salida en streaming, códigos de salida, timeouts y cómo evitar la inyección de comandos.
+difficulty: avanzado
+time: 15
+prerequisites:
+  - nucleo/streams
+  - javascript/async-await
+related:
+  - avanzado/worker-threads
+  - avanzado/cluster
+resources:
+  - title: Node.js — Child process
+    url: https://nodejs.org/docs/latest/api/child_process.html
+  - title: OWASP — OS Command Injection Defense
+    url: https://cheatsheetseries.owasp.org/cheatsheets/OS_Command_Injection_Defense_Cheat_Sheet.html
+keywords: ["child_process", "spawn", "exec", "execfile", "fork", "inyección de comandos", "shell", "stdout", "stderr", "exit code", "timeout"]
+milestone: 9
+---
+
+## La idea
+
+Un <Term slug="proceso-hijo">proceso hijo</Term> es otro programa que Node lanza y controla: `git`, `ffmpeg`, `pg_dump`, un script de Python… o el propio Node. `node:child_process` ofrece varias funciones:
+
+| Función | Salida | Usa shell | Para |
+| --- | --- | --- | --- |
+| `execFile(cmd, args)` | Toda junta al terminar | No | Comandos cortos con salida pequeña |
+| `spawn(cmd, args)` | En streaming | No | Salidas grandes o procesos largos |
+| `exec('cmd …')` | Toda junta al terminar | **Sí** | Casi nunca (ver abajo) |
+| `fork('script.js')` | Canal de mensajes | No | Otro proceso de Node que se comunica contigo |
+
+```js
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const { stdout } = await promisify(execFile)('git', ['log', '-1', '--format=%s']);
+
+const zip = spawn('zip', ['-r', 'copia.zip', 'data/']);
+zip.stdout.pipe(process.stdout);
+zip.on('close', (code) => console.log(`zip terminó con código ${code}`));
+```
+
+## Inyección de comandos
+
+`exec` pasa el texto a una shell (`/bin/sh`, `cmd.exe`), que interpreta `;`, `&&`, `$(…)`, comillas… Si el comando incluye algo que viene del usuario, el usuario puede ejecutar lo que quiera:
+
+```js
+// ⛔ ?file=x; rm -rf ~
+exec(`convert ${req.query.file} salida.png`);
+
+// ✅ Los argumentos van separados: nunca se interpretan como comandos
+execFile('convert', [req.query.file, 'salida.png']);
+```
+
+Usa `execFile` o `spawn` con un **array de argumentos**, y valida igualmente lo que recibes.
+
+## Errores comunes
+
+- Leer la salida de un proceso largo con `execFile`: se guarda entera en memoria y hay un límite (`maxBuffer`, 1 MiB por defecto). Usa `spawn`.
+- Ignorar el código de salida: un proceso puede «terminar» con error. `execFile` promisificado rechaza si el código no es 0.
+- No poner `timeout`: un comando colgado deja tu petición colgada.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/health.js']}>
+
+El endpoint de salud muestra qué versión está desplegada: el commit de git si existe (en tu máquina) o la versión del `package.json` si no (dentro de Docker no hay git). Se calcula **una vez** al crear el router y se reutiliza la promesa:
+
+<SourceFile path="src/health.js" lines="15-30" />
+
+Detalles: `execFile` sin shell, argumentos en array, `timeout` de 2 s, `cwd` fijado al directorio del código (no al de quien arrancó el proceso) y un `catch` que convierte cualquier fallo en un valor por defecto: la salud del servicio no puede depender de que exista git.
+
+```console
+$ curl -s localhost:3000/api/health
+{"status":"ok","version":"81a88b4","uptime":12,"memoryMb":73,"eventLoopDelayMs":0.21}
+```
+
+</ProjectStep>
