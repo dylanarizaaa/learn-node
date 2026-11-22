@@ -1,0 +1,94 @@
+---
+title: Funciones y closures
+description: Declaraciones, funciones flecha, parámetros por defecto y con nombre, funciones como valores y closures. La base de los middleware y las fábricas.
+difficulty: principiante
+time: 15
+prerequisites:
+  - javascript/javascript-moderno
+related:
+  - express/middleware
+  - express/arquitectura-por-capas
+resources:
+  - title: MDN — Funciones
+    url: https://developer.mozilla.org/es/docs/Web/JavaScript/Guide/Functions
+  - title: MDN — Closures
+    url: https://developer.mozilla.org/es/docs/Web/JavaScript/Closures
+  - title: MDN — Intl.NumberFormat
+    url: https://developer.mozilla.org/es/docs/Web/JavaScript/Reference/Global_Objects/Intl/NumberFormat
+keywords: [function, arrow function, flecha, parámetros por defecto, closure, clausura, fábrica, intl, numberformat]
+milestone: 1
+---
+
+## La idea
+
+En JavaScript las funciones son **valores**: se guardan en variables, se pasan como argumento y se devuelven desde otras funciones. Esto, que parece un detalle, es lo que hace posible casi todo en Node: callbacks, middleware, eventos.
+
+```js
+function sum(a, b) {        // declaración: se puede usar antes de definirla
+  return a + b;
+}
+
+const double = (n) => n * 2;  // flecha: corta, ideal para callbacks
+
+[1, 2, 3].map(double);        // pasar una función como argumento → [2, 4, 6]
+```
+
+## Parámetros con nombre y por defecto
+
+Cuando una función tiene opciones, recíbelas en un objeto y desestructúralo con valores por defecto. Quien la llama ve qué significa cada valor y puede omitir los que no necesita:
+
+```js
+function connect({ host = 'localhost', port = 5432, ssl = false } = {}) {
+  return `${host}:${port}${ssl ? ' (ssl)' : ''}`;
+}
+
+connect();                       // 'localhost:5432'
+connect({ port: 6543, ssl: true }); // 'localhost:6543 (ssl)'
+```
+
+El `= {}` final permite llamar a `connect()` sin argumentos.
+
+## Closures: funciones que recuerdan
+
+Una <Term slug="closure">closure</Term> es una función que **recuerda las variables** del lugar donde se creó. Con ellas construimos *fábricas*: funciones que configuran y devuelven otras funciones.
+
+```js
+function createCounter(start = 0) {
+  let count = start;          // variable privada: nadie fuera puede tocarla
+  return () => ++count;       // la función devuelta la recuerda
+}
+
+const next = createCounter(10);
+next(); // 11
+next(); // 12
+```
+
+Este patrón lo usarás constantemente: en Express, `rateLimit({ max: 10 })` es una fábrica que devuelve un middleware que recuerda `max`.
+
+## Errores comunes
+
+- **Olvidar el `return`** en una función con llaves: `const f = (n) => { n * 2 }` devuelve `undefined`. Sin llaves, el retorno es implícito.
+- **Devolver un objeto desde una flecha** sin paréntesis: `() => { a: 1 }` es un bloque, no un objeto. Escribe `() => ({ a: 1 })`.
+- **Muchos parámetros posicionales**: `create(10, true, false, 'x')` es ilegible. A partir de tres, usa un objeto.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/lib/money.js']}>
+
+Añade a `money.js` la función que muestra céntimos como dinero. Recibe las opciones como objeto con valores por defecto y delega el formato en `Intl.NumberFormat`, que conoce las reglas de cada idioma y moneda:
+
+<SourceFile path="src/lib/money.js" lines="27-35" />
+
+```console
+$ node -e "import('./src/lib/money.js').then(({ formatCents }) => console.log(formatCents(1250), formatCents(1250, { currency: 'EUR', locale: 'es-ES' })))"
+12,50 US$ 12,50 €
+```
+
+Más adelante, en la CLI, crearás una closure que fija la moneda una vez y se reutiliza en todo el programa:
+
+```js
+const money = (cents) => formatCents(cents, { currency: process.env.CURRENCY ?? 'USD' });
+money(899); // '8,99 US$'
+```
+
+</ProjectStep>

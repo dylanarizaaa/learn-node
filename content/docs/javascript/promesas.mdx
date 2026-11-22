@@ -1,0 +1,94 @@
+---
+title: Promesas
+description: Qué es una promesa, then/catch/finally, encadenar operaciones y ejecutar en paralelo con Promise.all, allSettled y race.
+difficulty: principiante
+time: 15
+prerequisites:
+  - javascript/callbacks
+related:
+  - javascript/async-await
+  - http/fetch
+resources:
+  - title: MDN — Usar promesas
+    url: https://developer.mozilla.org/es/docs/Web/JavaScript/Guide/Using_promises
+  - title: MDN — Promise.all
+    url: https://developer.mozilla.org/es/docs/Web/JavaScript/Reference/Global_Objects/Promise/all
+keywords: [promise, promesa, then, catch, finally, promise.all, allsettled, race, fs/promises, unhandled rejection]
+milestone: 2
+---
+
+## La idea
+
+Una <Term slug="promesa">promesa</Term> es un objeto que representa un resultado **que todavía no existe**. Está en uno de tres estados: *pendiente*, *cumplida* (con un valor) o *rechazada* (con un error). En vez de pasar un callback, la función te devuelve la promesa y tú decides qué hacer con ella:
+
+```js
+import { readFile } from 'node:fs/promises'; // la versión con promesas de fs
+
+readFile('saludo.txt', 'utf8')
+  .then((text) => text.toUpperCase())     // transforma el valor
+  .then((upper) => console.log(upper))    // recibe lo que devolvió el then anterior
+  .catch((error) => console.error(error.message)) // un solo catch para toda la cadena
+  .finally(() => console.log('Fin'));
+```
+
+Lo que devuelves en un `then` pasa al siguiente; si devuelves otra promesa, la cadena espera a que se resuelva. Cualquier error, en cualquier eslabón, salta directamente al `catch`.
+
+## Varias a la vez
+
+Las promesas brillan cuando lanzas varias operaciones **en paralelo**:
+
+| Función | Resuelve cuando… | Si una falla |
+| --- | --- | --- |
+| `Promise.all([...])` | todas terminan; da un array de resultados | rechaza en cuanto una falla |
+| `Promise.allSettled([...])` | todas terminan; da `{ status, value \| reason }` de cada una | nunca rechaza |
+| `Promise.race([...])` | la primera termina (bien o mal) | depende de la primera |
+| `Promise.any([...])` | la primera se cumple | rechaza solo si fallan todas |
+
+```js
+const [a, b] = await Promise.all([readFile('a.txt', 'utf8'), readFile('b.txt', 'utf8')]);
+```
+
+Las dos lecturas ocurren a la vez: el tiempo total es el de la más lenta, no la suma.
+
+## Convertir callbacks en promesas
+
+Si una función solo tiene versión con callback, `util.promisify` la envuelve:
+
+```js
+import { scrypt } from 'node:crypto';
+import { promisify } from 'node:util';
+
+const scryptAsync = promisify(scrypt);
+const key = await scryptAsync('contraseña', 'sal', 64);
+```
+
+## Errores comunes
+
+- **Olvidar el `catch`**: una promesa rechazada que nadie maneja provoca un *unhandled rejection* y Node **termina el proceso**.
+- **Olvidar el `return`** dentro de un `then` que hace otra operación asíncrona: la cadena no la espera.
+- **Crear promesas a mano sin necesidad** (`new Promise(...)` envolviendo algo que ya devuelve una promesa). Solo hace falta para APIs basadas en eventos o callbacks.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['scripts/ver-gastos.js']}>
+
+Reescribe el script con `node:fs/promises`. El manejo de errores pasa a un único `catch` al final de la cadena (versión intermedia: en la próxima lección quedará con `async/await`):
+
+```js title="scripts/ver-gastos.js"
+import { readFile } from 'node:fs/promises';
+import { summarize } from '../src/domain/expenses.js';
+import { formatCents } from '../src/lib/money.js';
+
+readFile('data/gastos.json', 'utf8')
+  .then((text) => JSON.parse(text)) // si el JSON está roto, también cae en el catch
+  .then((expenses) => summarize(expenses))
+  .then(({ count, total }) => console.log(`${count} gastos, ${formatCents(total)} en total`))
+  .catch((error) => {
+    console.error(`✖ No se pudo leer el archivo: ${error.message}`);
+    process.exitCode = 1;
+  });
+```
+
+Prueba a romper el JSON (borra un corchete) y ejecútalo: el `SyntaxError` de `JSON.parse` llega al mismo `catch` que un archivo inexistente.
+
+</ProjectStep>

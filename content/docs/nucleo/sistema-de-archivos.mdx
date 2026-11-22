@@ -1,0 +1,135 @@
+---
+title: Sistema de archivos
+description: Leer, escribir, listar y borrar con node:fs/promises, cuándo usar las versiones Sync, códigos de error y escrituras atómicas.
+difficulty: principiante
+time: 15
+prerequisites:
+  - nucleo/modulos
+  - javascript/async-await
+related:
+  - nucleo/path-y-url
+  - nucleo/streams
+  - proyectos/organizador-de-archivos
+resources:
+  - title: Node.js — File system
+    url: https://nodejs.org/docs/latest/api/fs.html
+  - title: Node.js — Trabajar con archivos
+    url: https://nodejs.org/en/learn/manipulating-files/reading-files-with-nodejs
+keywords: [fs, fs/promises, readfile, writefile, mkdir, readdir, stat, rename, rm, glob, enoent, atómico, sync]
+milestone: 2
+---
+
+## La idea
+
+`node:fs` tiene tres versiones de casi cada función: con callback (`fs.readFile`), síncrona (`fs.readFileSync`) y con promesas (`fs/promises`). Usa **promesas** por defecto:
+
+```js
+import { mkdir, readdir, readFile, rm, stat, writeFile, appendFile, rename } from 'node:fs/promises';
+
+await mkdir('salida/informes', { recursive: true }); // crea carpetas intermedias; no falla si existe
+await writeFile('salida/hola.txt', 'Hola\n');         // crea o sobrescribe
+await appendFile('salida/hola.txt', 'Otra línea\n');  // añade al final
+const text = await readFile('salida/hola.txt', 'utf8'); // sin 'utf8' devuelve un Buffer
+const names = await readdir('salida');                // nombres de archivos y carpetas
+const info = await stat('salida/hola.txt');           // tamaño, fechas, isFile(), isDirectory()
+await rename('salida/hola.txt', 'salida/adios.txt');  // mover o renombrar
+await rm('salida', { recursive: true, force: true }); // borrar carpeta y contenido
+```
+
+Para buscar archivos por patrón, `fs.promises.glob('src/**/*.js')` devuelve un iterador asíncrono (`for await`).
+
+## ¿Cuándo usar Sync?
+
+Las funciones `*Sync` **bloquean el hilo** hasta terminar. Son aceptables:
+
+- en scripts y CLIs que hacen una cosa y terminan;
+- al **arrancar** un servidor (leer un archivo de configuración antes de escuchar).
+
+Nunca dentro de un handler de peticiones: mientras lees, el servidor no atiende a nadie.
+
+## Errores con código
+
+Los errores de `fs` traen un `code` que dice exactamente qué pasó:
+
+| Código | Significado |
+| --- | --- |
+| `ENOENT` | No existe el archivo o la carpeta |
+| `EEXIST` | Ya existe |
+| `EACCES` / `EPERM` | Sin permisos |
+| `EISDIR` | Esperabas un archivo y es una carpeta |
+
+## Escrituras atómicas
+
+Si el proceso se interrumpe a mitad de un `writeFile`, el archivo puede quedar **a medias**, y con él todos tus datos. La solución: escribir en un archivo temporal y renombrarlo. `rename` dentro del mismo disco es atómico: o se ve el archivo viejo o el nuevo, nunca uno roto.
+
+## Errores comunes
+
+- Comprobar si existe con `existsSync` y luego leer: entre una cosa y otra el archivo puede desaparecer. Intenta leer directamente y maneja `ENOENT`.
+- Leer archivos enormes con `readFile`: cargas todo en memoria. Para eso están los [streams](/docs/nucleo/streams).
+- Rutas relativas que dependen de la carpeta actual: lo resuelves en la [siguiente lección](/docs/nucleo/path-y-url).
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/storage/json-store.js', 'bin/monedero.js']}>
+
+Convierte el almacenamiento en una **fábrica** que recibe la ruta del archivo y devuelve sus operaciones (una closure, como viste en [funciones](/docs/javascript/funciones-y-closures)). Crea la carpeta si no existe, escribe de forma atómica y asigna ids incrementales. Es la versión definitiva del hito 2; en el hito 6 la reemplazará un repositorio SQLite con las mismas operaciones.
+
+```js title="src/storage/json-store.js"
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
+
+export function createJsonStore(file) {
+  async function load() {
+    try {
+      return JSON.parse(await readFile(file, 'utf8'));
+    } catch (error) {
+      if (error.code === 'ENOENT') return []; // aún no existe: no hay gastos
+      throw error;
+    }
+  }
+
+  async function save(expenses) {
+    await mkdir(dirname(file), { recursive: true });
+    // Escritura atómica: primero a un archivo temporal y luego se renombra.
+    // Si el proceso muere a mitad, el archivo original sigue intacto.
+    const temp = `${file}.${process.pid}.tmp`;
+    await writeFile(temp, `${JSON.stringify(expenses, null, 2)}\n`);
+    await rename(temp, file);
+  }
+
+  return {
+    list: load,
+
+    async add(data) {
+      const expenses = await load();
+      const id = expenses.reduce((max, e) => Math.max(max, e.id), 0) + 1;
+      const expense = { id, ...data };
+      await save([...expenses, expense]);
+      return expense;
+    },
+
+    async addMany(items) {
+      const expenses = await load();
+      let id = expenses.reduce((max, e) => Math.max(max, e.id), 0);
+      const created = items.map((data) => ({ id: ++id, ...data }));
+      await save([...expenses, ...created]);
+      return created;
+    },
+  };
+}
+```
+
+Actualiza la CLI para usar la fábrica:
+
+```js title="bin/monedero.js"
+import { loadExpenses } from '../src/storage/json-store.js'; // [!code --]
+import { createJsonStore } from '../src/storage/json-store.js'; // [!code ++]
+
+const store = createJsonStore('data/gastos.json'); // [!code ++]
+const { count, total } = summarize(await loadExpenses('data/gastos.json')); // [!code --]
+const { count, total } = summarize(await store.list()); // [!code ++]
+```
+
+`addMany` aún no se usa: lo necesitarás para importar CSV en el hito 3.
+
+</ProjectStep>

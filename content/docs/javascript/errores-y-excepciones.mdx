@@ -1,0 +1,109 @@
+---
+title: Errores y excepciones
+description: throw, try/catch/finally, tipos de error, clases de error propias y la propiedad cause. Cómo fallar de forma clara y útil.
+difficulty: principiante
+time: 15
+prerequisites:
+  - javascript/funciones-y-closures
+related:
+  - express/manejo-de-errores
+  - javascript/async-await
+resources:
+  - title: MDN — Control de flujo y manejo de errores
+    url: https://developer.mozilla.org/es/docs/Web/JavaScript/Guide/Control_flow_and_error_handling
+  - title: Node.js — Errores
+    url: https://nodejs.org/docs/latest/api/errors.html
+keywords: [error, throw, try, catch, finally, rangeerror, typeerror, cause, instanceof, clases de error, extends]
+milestone: 1
+---
+
+## La idea
+
+Cuando algo no puede continuar, se **lanza** un error con `throw`. El error sube por la pila de llamadas hasta que alguien lo **captura** con `try/catch`. Si nadie lo captura, el proceso de Node termina mostrando el mensaje y la traza.
+
+```js
+function divide(a, b) {
+  if (b === 0) throw new RangeError('No se puede dividir entre cero');
+  return a / b;
+}
+
+try {
+  divide(1, 0);
+} catch (error) {
+  console.error(error.message); // 'No se puede dividir entre cero'
+} finally {
+  console.log('Esto se ejecuta siempre');
+}
+```
+
+## Tipos de error
+
+Usa el tipo que mejor describe el problema; así quien lo captura puede distinguirlos con `instanceof`:
+
+| Tipo | Cuándo |
+| --- | --- |
+| `TypeError` | Un valor no es del tipo esperado (`undefined` en lugar de una función) |
+| `RangeError` | Un valor del tipo correcto pero fuera de rango (un importe negativo) |
+| `SyntaxError` | Texto con formato inválido (`JSON.parse('{')`) |
+| `Error` | Cualquier otro caso |
+
+## Errores propios
+
+Para errores de tu aplicación, crea clases que extiendan `Error` y añadan información. Y si un error es consecuencia de otro, encadénalo con `cause` para no perder el original:
+
+```js
+class ConfigError extends Error {
+  constructor(message, options) {
+    super(message, options);
+    this.name = 'ConfigError';
+  }
+}
+
+try {
+  JSON.parse('{ roto');
+} catch (error) {
+  throw new ConfigError('config.json no es válido', { cause: error });
+}
+```
+
+## Errores comunes
+
+- **Lanzar texto**: `throw 'falló'` no tiene traza ni tipo. Lanza siempre un `Error` (o una subclase).
+- **Tragarse errores**: `catch (e) {}` vacío esconde fallos que luego cuestan horas encontrar. Si capturas, haz algo: registrar, traducir o volver a lanzar.
+- **Capturar demasiado**: envuelve solo la operación que puede fallar y de la que sabes recuperarte; deja que el resto suba.
+
+<Callout type="info" title="¿Y los errores asíncronos?">
+`try/catch` solo captura errores de código **síncrono** o de un `await`. Los errores de callbacks y promesas tienen sus propias reglas: las verás en las tres lecciones siguientes.
+</Callout>
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/lib/errors.js', 'src/index.js']}>
+
+`toCents` ya lanza `RangeError` cuando el importe no es válido. Captúralo en `src/index.js` para mostrar un mensaje amable en lugar de una traza:
+
+```js title="src/index.js"
+import { formatCents, toCents } from './lib/money.js';
+
+for (const input of ['12,50', 'doce', '-3']) {
+  try {
+    console.log(`${input} → ${formatCents(toCents(input))}`);
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error; // no es nuestro: que suba
+    console.error(`✖ ${error.message}`);
+  }
+}
+```
+
+```console
+$ node src/index.js
+12,50 → 12,50 US$
+✖ Importe no válido: "doce"
+✖ Importe no válido: "-3"
+```
+
+Crea también la jerarquía de errores que usará la API. Cada clase sabe qué código HTTP le corresponde (lo aprovecharás en el [manejador de errores de Express](/docs/express/manejo-de-errores)); por ahora fíjate en `extends`, `super(message, { cause })` y `new.target.name`, que pone a cada error el nombre de su clase:
+
+<SourceFile path="src/lib/errors.js" />
+
+</ProjectStep>

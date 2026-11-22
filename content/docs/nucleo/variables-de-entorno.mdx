@@ -1,0 +1,96 @@
+---
+title: Variables de entorno
+description: Configurar un programa sin tocar el código con process.env, archivos .env cargados por Node (--env-file) y buenas prácticas con secretos.
+difficulty: principiante
+time: 10
+prerequisites:
+  - nucleo/process-y-argumentos
+related:
+  - produccion/configuracion
+  - seguridad/seguridad-de-apis
+resources:
+  - title: Node.js — Archivos .env
+    url: https://nodejs.org/docs/latest/api/environment_variables.html
+  - title: The Twelve-Factor App — Configuración
+    url: https://12factor.net/es/config
+keywords: [process.env, env-file, dotenv, .env, loadEnvFile, secretos, configuración, twelve factor]
+milestone: 2
+---
+
+## La idea
+
+Una <Term slug="variable-de-entorno">variable de entorno</Term> es un valor que el sistema operativo entrega al proceso al arrancar. Permiten que el **mismo código** se comporte distinto en tu máquina, en los tests y en producción: puerto, ruta de la base de datos, claves de API, nivel de logs…
+
+```console
+$ PORT=4000 node -e "console.log(process.env.PORT, typeof process.env.PORT)"
+4000 string
+```
+
+Todas son **texto**. Si necesitas un número o un booleano, conviértelo (y valídalo, como harás en [Configuración](/docs/produccion/configuracion)).
+
+## Archivos .env sin dependencias
+
+Escribir variables en cada comando es incómodo. Node puede leerlas de un archivo:
+
+```dotenv title=".env"
+PORT=4000
+DATABASE_PATH=data/dev.db
+```
+
+```bash
+node --env-file=.env server.js            # falla si .env no existe
+node --env-file-if-exists=.env server.js  # lo usa solo si existe
+```
+
+Desde el código también puedes cargarlo con `process.loadEnvFile('.env')`. Las variables que ya existan en el entorno **no se sobrescriben**: así producción manda sobre el archivo.
+
+## Buenas prácticas
+
+- **Nunca subas `.env` al repositorio**: suele contener secretos. Añádelo a `.gitignore`.
+- **Sube un `.env.example`** con todas las variables y valores de ejemplo: es la documentación de la configuración.
+- **Lee `process.env` en un solo sitio** (el punto de entrada o un módulo de configuración) y pasa los valores al resto del código. Funciones que leen `process.env` por dentro son difíciles de probar.
+
+## Errores comunes
+
+- `process.env.DEBUG === true` siempre es `false`: el valor es el texto `'true'`.
+- Esperar que `--env-file` funcione después del nombre del script: las opciones de Node van **antes** (`node --env-file=.env app.js`).
+- Usar un valor por defecto inseguro para un secreto (`JWT_SECRET ?? 'secreto'`): si falta en producción, tu app arranca con una clave conocida. Mejor fallar.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['.env.example', 'bin/monedero.js', 'package.json']}>
+
+Haz configurables la moneda y la ruta del archivo de datos. Usa una closure para no repetir la moneda en cada llamada:
+
+```js title="bin/monedero.js"
+const store = createJsonStore(DEFAULT_FILE); // [!code --]
+const store = createJsonStore(process.env.DATA_FILE ?? DEFAULT_FILE); // [!code ++]
+const money = (cents) => formatCents(cents, { currency: process.env.CURRENCY ?? 'USD' }); // [!code ++]
+```
+
+Sustituye cada `formatCents(...)` de la CLI por `money(...)`. Documenta las variables:
+
+```dotenv title=".env.example"
+# Copia este archivo como .env y ajusta los valores
+CURRENCY=USD
+# Ruta del archivo de datos. Si no se define, data/gastos.json dentro del proyecto.
+# DATA_FILE=/ruta/a/mis-gastos.json
+```
+
+Y carga `.env` desde el script de npm:
+
+```json title="package.json"
+"scripts": {
+  "cli": "node --env-file-if-exists=.env bin/monedero.js"
+}
+```
+
+```console
+$ CURRENCY=EUR node bin/monedero.js add 3 ocio Café
+✔ Gasto #3: 3,00 € en ocio
+$ npm run cli -- summary
+```
+
+Los argumentos después de `--` se pasan al script en lugar de a npm.
+
+</ProjectStep>

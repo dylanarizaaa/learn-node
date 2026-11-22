@@ -1,0 +1,104 @@
+---
+title: Eventos
+description: EventEmitter — emitir y escuchar eventos, on/once/off, el evento error, listeners asíncronos y fugas de memoria.
+difficulty: intermedio
+time: 12
+prerequisites:
+  - nucleo/process-y-argumentos
+related:
+  - avanzado/tiempo-real
+  - nucleo/streams
+resources:
+  - title: Node.js — Events
+    url: https://nodejs.org/docs/latest/api/events.html
+keywords: [eventemitter, events, on, once, off, emit, listener, error event, desacoplar, once promesa, maxlisteners]
+milestone: 2
+---
+
+## La idea
+
+Un <Term slug="event-emitter">EventEmitter</Term> permite que una parte del código **anuncie** que algo ocurrió y que otras partes **reaccionen**, sin conocerse entre sí. Media API de Node se basa en él: servidores (`'request'`), streams (`'data'`, `'end'`), procesos (`'exit'`).
+
+```js
+import { EventEmitter } from 'node:events';
+
+const orders = new EventEmitter();
+
+orders.on('created', (order) => console.log(`Pedido ${order.id} recibido`));
+orders.once('created', () => console.log('¡Primer pedido del día!')); // solo la primera vez
+
+orders.emit('created', { id: 1 });
+orders.emit('created', { id: 2 });
+```
+
+```console
+$ node pedidos.js
+Pedido 1 recibido
+¡Primer pedido del día!
+Pedido 2 recibido
+```
+
+Los listeners se ejecutan **de forma síncrona**, en el orden en que se registraron, dentro del propio `emit`.
+
+## Lo que debes saber
+
+- **`'error'` es especial**: si se emite y nadie lo escucha, Node lanza el error y termina el proceso. Si un emisor puede fallar, escucha `'error'`.
+- **Quita los listeners que ya no necesitas** con `off(evento, listener)`. Un listener olvidado mantiene vivo todo lo que referencia: es una fuga de memoria. Node avisa con `MaxListenersExceededWarning` a partir de 10 listeners del mismo evento.
+- **Esperar un evento con promesas**: `await once(emitter, 'ready')` (de `node:events`) resuelve con los argumentos del primer `'ready'`.
+- **Listeners async**: si el listener es una función `async` y falla, el error no vuelve al `emit`; se convierte en un rechazo sin manejar. Captura sus errores dentro.
+
+## Cuándo usar eventos
+
+Encajan cuando quien produce algo **no debe depender** de quién lo consume: el servicio de gastos anuncia «gasto creado» y, sin tocarlo, puedes añadir un aviso de presupuesto, una notificación en tiempo real o una auditoría. No los uses para flujos donde necesitas el resultado: para eso, llama a la función directamente.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['bin/monedero.js']}>
+
+Desacopla lo que pasa **después** de crear un gasto. El comando `add` solo guarda y anuncia; los listeners deciden qué hacer. Añade un aviso de presupuesto mensual configurable con `MONTHLY_BUDGET`:
+
+```js title="bin/monedero.js"
+import { EventEmitter } from 'node:events';
+
+const events = new EventEmitter();
+
+events.on('expense.created', (expense) => {
+  console.log(styleText('green', `✔ Gasto #${expense.id}: ${money(expense.amount)} en ${expense.category}`));
+});
+events.on('expense.created', checkBudget);
+
+// En el comando add, en lugar del console.log:
+const expense = await store.add({ /* … */ });
+events.emit('expense.created', expense);
+
+/** Avisa si el gasto del mes supera MONTHLY_BUDGET. Es async: captura sus propios errores. */
+async function checkBudget(expense) {
+  const budget = process.env.MONTHLY_BUDGET;
+  if (!budget) return;
+  try {
+    const { total } = summarize(await listMonth(expense.date.slice(0, 7)));
+    if (total > toCents(budget)) {
+      console.warn(styleText('yellow', `⚠ Llevas ${money(total)} este mes: superas tu presupuesto de ${money(toCents(budget))}`));
+    }
+  } catch (error) {
+    console.error(styleText('red', `No se pudo comprobar el presupuesto: ${error.message}`));
+  }
+}
+
+/** Gastos de un mes, del más reciente al más antiguo (úsala también en list y summary). */
+async function listMonth(month) {
+  const { from, to } = monthRange(month);
+  const expenses = await store.list();
+  return expenses.filter((e) => e.date >= from && e.date <= to).toSorted((a, b) => b.date.localeCompare(a.date));
+}
+```
+
+```console
+$ MONTHLY_BUDGET=15 node bin/monedero.js add 8 transporte Taxi
+✔ Gasto #2: 8,00 US$ en transporte
+⚠ Llevas 20,50 US$ este mes: superas tu presupuesto de 15,00 US$
+```
+
+Este mismo bus de eventos viajará con el proyecto: en el hito 5 lo usará el servicio de gastos, y en el hito 9 enviará los eventos en tiempo real a los clientes conectados.
+
+</ProjectStep>

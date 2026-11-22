@@ -1,0 +1,154 @@
+---
+title: process y argumentos
+description: El objeto process, leer argumentos con util.parseArgs, salida estándar y de errores, códigos de salida y colores con styleText.
+difficulty: principiante
+time: 18
+prerequisites:
+  - nucleo/path-y-url
+related:
+  - nucleo/variables-de-entorno
+  - proyectos/cli-de-notas
+resources:
+  - title: Node.js — process
+    url: https://nodejs.org/docs/latest/api/process.html
+  - title: Node.js — util.parseArgs
+    url: https://nodejs.org/docs/latest/api/util.html#utilparseargsconfig
+  - title: Node.js — util.styleText
+    url: https://nodejs.org/docs/latest/api/util.html#utilstyletextformat-text-options
+keywords: [process, argv, parseargs, exitcode, process.exit, stdout, stderr, cli, styletext, colores, shebang]
+milestone: 2
+---
+
+## La idea
+
+`process` es un objeto global con todo lo relativo al programa en ejecución:
+
+| Propiedad | Para qué |
+| --- | --- |
+| `process.argv` | Argumentos de la línea de comandos |
+| `process.env` | Variables de entorno |
+| `process.cwd()` | Carpeta desde la que se ejecutó el comando |
+| `process.exitCode` | Código de salida al terminar (0 = éxito) |
+| `process.stdout` / `process.stderr` | Salida normal y salida de errores |
+| `process.pid`, `process.platform` | Id del proceso, sistema operativo |
+
+## Leer argumentos con parseArgs
+
+`process.argv` es un array de texto en bruto. `util.parseArgs` lo convierte en opciones y posicionales, con validación:
+
+```js title="saludar.js"
+import { parseArgs } from 'node:util';
+
+const { values, positionals } = parseArgs({
+  allowPositionals: true,
+  options: {
+    times: { type: 'string', short: 't', default: '1' },
+    shout: { type: 'boolean', short: 's', default: false },
+  },
+});
+
+for (let i = 0; i < Number(values.times); i++) {
+  const text = `Hola, ${positionals[0] ?? 'mundo'}`;
+  console.log(values.shout ? text.toUpperCase() : text);
+}
+```
+
+```console
+$ node saludar.js Ana -t 2 --shout
+HOLA, ANA
+HOLA, ANA
+$ node saludar.js --color
+TypeError [ERR_PARSE_ARGS_UNKNOWN_OPTION]: Unknown option '--color'
+```
+
+## Las reglas de una buena CLI
+
+- **Resultados por `stdout`, mensajes y errores por `stderr`** (`console.error`, `console.warn`). Así `monedero export > gastos.csv` no mete avisos dentro del CSV.
+- **Código de salida 0 si todo fue bien**; 1 para errores; 2 para un uso incorrecto. Los scripts y la CI se basan en él.
+- **Prefiere `process.exitCode = 1` a `process.exit(1)`**: `exit()` corta en seco y puede perder salida pendiente; `exitCode` deja terminar lo que estaba en curso.
+- **Colores con `util.styleText`**: respeta automáticamente `NO_COLOR` y desactiva los colores si la salida no es una terminal.
+
+## Errores comunes
+
+- Leer `process.argv[2]` a mano en una CLI con opciones: acabarás reimplementando `parseArgs` con errores.
+- Mostrar una traza de error a quien usa la CLI: captura el error y muestra un mensaje de una línea.
+- Olvidar que `parseArgs` devuelve **texto**: `--times 3` llega como `'3'`.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['bin/monedero.js']}>
+
+Convierte el esqueleto en una CLI con comandos. Este es el núcleo (versión del hito 2: en las lecciones siguientes añadirás la ruta del archivo, variables de entorno y eventos):
+
+```js title="bin/monedero.js"
+#!/usr/bin/env node
+import { join } from 'node:path';
+import { parseArgs, styleText } from 'node:util';
+import { CATEGORIES, currentMonth, monthRange, summarize, today } from '../src/domain/expenses.js';
+import { formatCents, toCents } from '../src/lib/money.js';
+import { createJsonStore } from '../src/storage/json-store.js';
+
+const DEFAULT_FILE = join(import.meta.dirname, '..', 'data', 'gastos.json');
+const store = createJsonStore(DEFAULT_FILE);
+
+try {
+  await main();
+} catch (error) {
+  console.error(styleText('red', `✖ ${error.message}`));
+  // 2 = uso incorrecto (opción desconocida); 1 = cualquier otro error
+  process.exitCode = error.code?.startsWith('ERR_PARSE_ARGS') ? 2 : 1;
+}
+
+async function main() {
+  const { values, positionals } = parseArgs({
+    allowPositionals: true,
+    options: {
+      month: { type: 'string', short: 'm', default: currentMonth() },
+      help: { type: 'boolean', short: 'h', default: false },
+    },
+  });
+  const [command, ...args] = positionals;
+
+  switch (command) {
+    case 'add': {
+      const [amount, category, ...description] = args;
+      if (!CATEGORIES.includes(category)) {
+        throw new RangeError(`Categoría no válida: "${category}". Usa: ${CATEGORIES.join(', ')}`);
+      }
+      const expense = await store.add({
+        amount: toCents(amount),
+        category,
+        description: description.join(' '),
+        date: today(),
+      });
+      console.log(styleText('green', `✔ Gasto #${expense.id}: ${formatCents(expense.amount)} en ${category}`));
+      break;
+    }
+    case 'summary': {
+      const { from, to } = monthRange(values.month);
+      const expenses = (await store.list()).filter((e) => e.date >= from && e.date <= to);
+      const { count, total, byCategory } = summarize(expenses);
+      console.log(styleText('bold', `Resumen de ${values.month}: ${formatCents(total)} en ${count} gastos\n`));
+      for (const [category, cents] of Object.entries(byCategory)) {
+        const bar = '█'.repeat(total > 0 ? Math.round((cents / total) * 30) : 0);
+        console.log(`${category.padEnd(11)} ${formatCents(cents).padStart(12)}  ${styleText('cyan', bar)}`);
+      }
+      break;
+    }
+    default:
+      console.log('Uso: monedero <add|summary> [opciones]');
+      process.exitCode = 2;
+  }
+}
+```
+
+```console
+$ node bin/monedero.js add 5 viajes
+✖ Categoría no válida: "viajes". Usa: comida, transporte, hogar, ocio, salud, otros
+$ echo $?
+1
+```
+
+El comando `list` sigue el mismo patrón que `summary`; tienes la versión completa en [Streams](/docs/nucleo/streams), donde la CLI gana también `import` y `export`.
+
+</ProjectStep>

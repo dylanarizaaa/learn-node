@@ -1,0 +1,79 @@
+---
+title: Buffers
+description: Datos binarios en Node — crear y convertir Buffers, codificaciones (utf8, base64, hex), bytes frente a caracteres y StringDecoder.
+difficulty: intermedio
+time: 12
+prerequisites:
+  - nucleo/sistema-de-archivos
+related:
+  - nucleo/streams
+  - seguridad/contrasenas
+resources:
+  - title: Node.js — Buffer
+    url: https://nodejs.org/docs/latest/api/buffer.html
+  - title: Node.js — String decoder
+    url: https://nodejs.org/docs/latest/api/string_decoder.html
+keywords: [buffer, bytes, utf8, base64, hex, codificación, stringdecoder, uint8array, multibyte, csv]
+milestone: 3
+---
+
+## La idea
+
+Un <Term slug="buffer">Buffer</Term> es una secuencia de **bytes**. Archivos, sockets y operaciones criptográficas trabajan con bytes, no con texto; el texto aparece cuando decides **cómo interpretarlos** (la codificación).
+
+```js
+const buf = Buffer.from('Piña', 'utf8');
+buf;                       // <Buffer 50 69 c3 b1 61>
+buf.length;                // 5 bytes…
+'Piña'.length;             // …pero 4 caracteres: la «ñ» ocupa 2 bytes en UTF-8
+buf.toString('utf8');      // 'Piña'
+buf.toString('base64');    // 'UGnDsWE='
+buf.toString('hex');       // '5069c3b161'
+Buffer.byteLength('€');    // 3
+```
+
+`Buffer` es una subclase de `Uint8Array`, así que funciona con APIs web que esperan bytes.
+
+## El problema de los caracteres partidos
+
+Cuando lees un archivo por trozos (con streams, en la siguiente lección), un trozo puede terminar **a mitad de un carácter**:
+
+```js
+const bytes = Buffer.from('Piña');
+const first = bytes.subarray(0, 3);  // P, i y el primer byte de «ñ»
+const second = bytes.subarray(3);    // el segundo byte de «ñ» y la a
+
+first.toString() + second.toString(); // 'Pi��a'  ← carácter roto
+```
+
+`StringDecoder` resuelve esto: guarda los bytes incompletos hasta que llega el resto.
+
+```js
+import { StringDecoder } from 'node:string_decoder';
+
+const decoder = new StringDecoder('utf8');
+decoder.write(first) + decoder.write(second) + decoder.end(); // 'Piña'
+```
+
+## Errores comunes
+
+- Usar `string.length` para límites de tamaño en bytes (cabeceras, cuerpos de petición): usa `Buffer.byteLength`.
+- Convertir cada trozo de un stream con `toString()` por separado: rompe caracteres multibyte. Usa `StringDecoder` o `stream.setEncoding('utf8')`.
+- `new Buffer(...)`: está obsoleto e inseguro. Usa `Buffer.from` o `Buffer.alloc`.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/csv/csv.js']}>
+
+Empieza el hito 3: Monedero importará y exportará gastos en CSV. Antes de leer archivos por trozos, necesitas convertir una línea de texto en campos y al revés. El formato CSV tiene una trampa: un campo con comas va **entre comillas**, y una comilla dentro de un campo se escribe doble (`""`).
+
+<SourceFile path="src/csv/csv.js" lines="1-54" />
+
+```console
+$ node -e "import('./src/csv/csv.js').then((m) => console.log(m.parseCsvLine('2026-11-04,9.99,ocio,\"Cine, palomitas\"')))"
+[ '2026-11-04', '9.99', 'ocio', 'Cine, palomitas' ]
+```
+
+El `StringDecoder` aparece en la siguiente lección, dentro del parser que lee el archivo por trozos.
+
+</ProjectStep>

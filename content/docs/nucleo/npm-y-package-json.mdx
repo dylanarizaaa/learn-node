@@ -1,0 +1,112 @@
+---
+title: npm y package.json
+description: El manifiesto del proyecto, scripts, dependencias, versionado semántico, el lockfile, npx y npm link para crear tu propio comando.
+difficulty: principiante
+time: 15
+prerequisites:
+  - nucleo/modulos
+related:
+  - calidad/test-runner
+  - produccion/docker
+resources:
+  - title: npm — package.json
+    url: https://docs.npmjs.com/cli/configuring-npm/package-json
+  - title: npm — scripts
+    url: https://docs.npmjs.com/cli/using-npm/scripts
+  - title: semver — Calculadora de rangos
+    url: https://semver.npmjs.com/
+keywords: [npm, package.json, scripts, dependencies, devDependencies, semver, lockfile, package-lock, npx, npm link, bin, engines]
+milestone: 2
+---
+
+## La idea
+
+<Term slug="npm">npm</Term> viene con Node y hace tres cosas: **instala paquetes** del registro público, **ejecuta scripts** del proyecto y **publica** paquetes. Todo gira alrededor de <Term slug="package-json">package.json</Term>:
+
+```json title="package.json"
+{
+  "name": "mi-api",
+  "version": "1.0.0",
+  "type": "module",
+  "engines": { "node": ">=22.18" },
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "test": "node --test"
+  },
+  "dependencies": { "express": "^5.3.0" },
+  "devDependencies": { "pino-pretty": "^13.2.0" }
+}
+```
+
+## Comandos esenciales
+
+```bash
+npm install express          # añade a dependencies (lo necesita la app en producción)
+npm install -D pino-pretty   # añade a devDependencies (solo para desarrollar)
+npm install                  # instala todo lo que diga package.json + lockfile
+npm ci                       # instalación exacta y limpia desde el lockfile (CI, Docker)
+npm run dev                  # ejecuta un script (npm test y npm start no necesitan "run")
+npm outdated                 # qué dependencias tienen versiones nuevas
+npx serve out                # ejecuta un paquete sin instalarlo en el proyecto
+```
+
+## Versiones: semver y lockfile
+
+Las versiones siguen <Term slug="semver">semver</Term>: `MAYOR.MENOR.PARCHE`. Un cambio de MAYOR puede romper tu código; MENOR añade cosas compatibles; PARCHE corrige errores.
+
+| Rango | Acepta | Ejemplo con 5.3.0 |
+| --- | --- | --- |
+| `^5.3.0` | menores y parches | 5.3.1, 5.9.0 — no 6.0.0 |
+| `~5.3.0` | solo parches | 5.3.4 — no 5.4.0 |
+| `5.3.0` | exactamente esa | 5.3.0 |
+
+El <Term slug="lockfile">lockfile</Term> (`package-lock.json`) registra la versión exacta instalada de **cada** paquete, incluidas las dependencias de tus dependencias. **Súbelo siempre al repositorio**: garantiza que tu máquina, la de tu equipo y producción instalan lo mismo. `node_modules/`, en cambio, nunca se sube.
+
+## Errores comunes
+
+- **Instalar todo como dependencia normal**: herramientas de desarrollo (formateadores, pino-pretty) van en `devDependencies`, que no se instalan en producción con `npm ci --omit=dev`.
+- **Borrar el lockfile para «arreglar» algo**: actualizarás cientos de paquetes a la vez sin saberlo.
+- **Instalar paquetes por cualquier cosa**: cada dependencia es código de terceros que se ejecuta con tus permisos. Antes de instalar, comprueba si Node ya lo trae (`fetch`, `parseArgs`, `node:test`…).
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['package.json', '.gitignore']}>
+
+Completa el `package.json` de Monedero con la versión de Node, los scripts y el campo `bin`, que convierte `bin/monedero.js` en un comando del sistema:
+
+```json title="package.json"
+{
+  "name": "monedero",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.18" },
+  "bin": { "monedero": "./bin/monedero.js" },
+  "scripts": {
+    "cli": "node bin/monedero.js"
+  }
+}
+```
+
+```text title=".gitignore"
+node_modules/
+data/
+.env
+```
+
+`npm link` crea un enlace global al proyecto: a partir de ahí puedes escribir `monedero` como cualquier otro comando (en macOS y Linux, el archivo necesita permiso de ejecución).
+
+```console
+$ chmod +x bin/monedero.js
+$ npm link
+$ monedero
+2 gastos, 20,50 US$ en total
+$ cd ~ && monedero
+0 gastos, 0,00 US$ en total
+```
+
+¿Por qué desde otra carpeta no encuentra los gastos? Porque `'data/gastos.json'` se resuelve desde la carpeta **donde estás**, no desde la del proyecto. Lo arreglarás en [Path y URL](/docs/nucleo/path-y-url).
+
+`private: true` evita que lo publiques en npm por accidente. Todavía no hay dependencias: Monedero no instalará ninguna hasta el hito 5.
+
+</ProjectStep>

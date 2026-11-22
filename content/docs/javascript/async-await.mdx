@@ -1,0 +1,112 @@
+---
+title: async / await
+description: Escribe código asíncrono que se lee de arriba abajo. await de nivel superior, try/catch con await, paralelismo y los errores más habituales.
+difficulty: principiante
+time: 15
+prerequisites:
+  - javascript/promesas
+related:
+  - nucleo/sistema-de-archivos
+  - nucleo/event-loop
+resources:
+  - title: MDN — async function
+    url: https://developer.mozilla.org/es/docs/Web/JavaScript/Reference/Statements/async_function
+  - title: MDN — await
+    url: https://developer.mozilla.org/es/docs/Web/JavaScript/Reference/Operators/await
+keywords: [async, await, top-level await, try catch, paralelo, secuencial, enoent]
+milestone: 2
+---
+
+## La idea
+
+`async/await` es otra forma de escribir promesas que se lee como código normal, de arriba abajo:
+
+- Una función `async` **siempre devuelve una promesa**.
+- Dentro de ella, `await promesa` **pausa esa función** (no el programa) hasta que la promesa se resuelve, y devuelve su valor.
+- Si la promesa se rechaza, `await` **lanza** el error: se captura con el `try/catch` de siempre.
+
+```js
+import { readFile } from 'node:fs/promises';
+
+async function readConfig(path) {
+  try {
+    const text = await readFile(path, 'utf8');
+    return JSON.parse(text);
+  } catch (error) {
+    throw new Error(`No se pudo leer ${path}`, { cause: error });
+  }
+}
+
+const config = await readConfig('config.json'); // await de nivel superior
+```
+
+En los módulos ES puedes usar `await` directamente en el nivel superior del archivo, fuera de cualquier función.
+
+## Secuencial frente a paralelo
+
+`await` en un bucle espera cada operación antes de empezar la siguiente. Si son independientes, lánzalas todas y espera el conjunto:
+
+<Columns>
+  <Column title="Secuencial (lento)" tone="bad">
+    ```js
+    for (const file of files) {
+      results.push(await readFile(file));
+    }
+    ```
+    Tiempo total: la **suma** de todas las lecturas.
+  </Column>
+  <Column title="En paralelo" tone="good">
+    ```js
+    const results = await Promise.all(
+      files.map((file) => readFile(file)),
+    );
+    ```
+    Tiempo total: el de la lectura **más lenta**.
+  </Column>
+</Columns>
+
+El secuencial sigue siendo correcto cuando cada paso depende del anterior o cuando no quieres saturar un servicio con cientos de peticiones a la vez.
+
+## Errores comunes
+
+- **Olvidar el `await`**: `const data = readFile(...)` guarda una promesa, no el contenido. Si después haces `data.length`, obtienes `undefined`.
+- **`await` dentro de `forEach`**: `forEach` no espera a funciones async. Usa `for...of` o `Promise.all` con `map`.
+- **Funciones async sin manejo de errores** llamadas sin `await` ni `.catch()`: su error se convierte en un *unhandled rejection*.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/storage/json-store.js', 'scripts/ver-gastos.js']}>
+
+Crea el módulo de almacenamiento de Monedero. Si el archivo aún no existe (código de error `ENOENT`), no es un fallo: simplemente no hay gastos. Cualquier otro error, sí, así que se vuelve a lanzar. Es la versión 1; en [Sistema de archivos](/docs/nucleo/sistema-de-archivos) la harás robusta.
+
+```js title="src/storage/json-store.js"
+import { readFile, writeFile } from 'node:fs/promises';
+
+export async function loadExpenses(file) {
+  try {
+    return JSON.parse(await readFile(file, 'utf8'));
+  } catch (error) {
+    if (error.code === 'ENOENT') return []; // todavía no hay archivo: lista vacía
+    throw error;
+  }
+}
+
+export async function saveExpenses(file, expenses) {
+  await writeFile(file, JSON.stringify(expenses, null, 2));
+}
+```
+
+Y el script queda en su forma final, con `await` de nivel superior:
+
+```js title="scripts/ver-gastos.js"
+import { summarize } from '../src/domain/expenses.js';
+import { formatCents } from '../src/lib/money.js';
+import { loadExpenses } from '../src/storage/json-store.js';
+
+const { count, total } = summarize(await loadExpenses('data/gastos.json'));
+console.log(`${count} gastos, ${formatCents(total)} en total`);
+```
+
+Si `loadExpenses` lanza (por ejemplo, JSON roto), el error de nivel superior termina el proceso con código 1 y una traza clara: para un script, es justo lo que quieres.
+
+</ProjectStep>

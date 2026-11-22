@@ -1,0 +1,115 @@
+---
+title: El event loop
+description: En qué orden se ejecutan el código síncrono, las promesas, process.nextTick, los temporizadores y setImmediate, y cómo no bloquear el bucle.
+difficulty: intermedio
+time: 15
+prerequisites:
+  - introduccion/como-funciona-node
+  - javascript/async-await
+related:
+  - avanzado/event-loop-a-fondo
+  - avanzado/worker-threads
+resources:
+  - title: Node.js — El event loop, los timers y process.nextTick()
+    url: https://nodejs.org/en/learn/asynchronous-work/event-loop-timers-and-nexttick
+  - title: Node.js — Timers
+    url: https://nodejs.org/docs/latest/api/timers.html
+keywords: [event loop, microtareas, macrotareas, nexttick, setimmediate, settimeout, setinterval, fases, bloquear, unref]
+milestone: 3
+---
+
+## La idea
+
+El <Term slug="event-loop">event loop</Term> repite un ciclo: ejecuta los temporizadores vencidos, recoge la E/S terminada, ejecuta `setImmediate`, cierra conexiones… y vuelve a empezar. **Entre cada callback**, vacía dos colas prioritarias: la de `process.nextTick` y la de promesas (microtareas).
+
+<Flow
+  direction="vertical"
+  steps={[
+    { title: 'Código síncrono', desc: 'todo el script, de arriba abajo', tone: 'brand' },
+    { title: 'Microtareas', desc: 'process.nextTick, después promesas (then, await)' },
+    { title: 'Timers', desc: 'setTimeout / setInterval vencidos' },
+    { title: 'E/S', desc: 'callbacks de archivos, red…' },
+    { title: 'Check', desc: 'setImmediate', tone: 'muted' },
+  ]}
+  caption="Simplificado. Tras cada callback de una fase se vacían de nuevo las microtareas."
+/>
+
+## Compruébalo
+
+Dentro de un callback de E/S (aquí, al terminar de leer un archivo) el orden es siempre el mismo:
+
+```js title="orden.js"
+import { readFile } from 'node:fs';
+
+readFile(import.meta.filename, () => {
+  console.log('síncrono');
+  setTimeout(() => console.log('setTimeout'), 0);
+  setImmediate(() => console.log('setImmediate'));
+  Promise.resolve().then(() => console.log('promesa'));
+  process.nextTick(() => console.log('nextTick'));
+});
+```
+
+```console
+$ node orden.js
+síncrono
+nextTick
+promesa
+setImmediate
+setTimeout
+```
+
+1. Primero termina el código síncrono del callback.
+2. Se vacían las microtareas: `nextTick` y después las promesas.
+3. La fase *check* (`setImmediate`) va justo después de la de E/S…
+4. …y el temporizador espera a la siguiente vuelta del bucle.
+
+<Callout type="info" title="Dos rarezas que conviene conocer">
+En el **nivel superior** de un script, el orden entre `setTimeout(…, 0)` y `setImmediate` puede variar de una ejecución a otra. Y en un **módulo ES**, el propio módulo se evalúa dentro de una promesa, así que en el nivel superior las promesas se ejecutan *antes* que `process.nextTick`. Dentro de callbacks, como arriba, el orden es el de la tabla.
+</Callout>
+
+## Temporizadores útiles
+
+```js
+const id = setInterval(() => console.log('tic'), 1000);
+clearInterval(id);
+
+const timer = setTimeout(cleanup, 60_000);
+timer.unref(); // no mantiene vivo el proceso: si no queda nada más, Node sale
+
+import { setTimeout as sleep } from 'node:timers/promises';
+await sleep(500); // espera sin callbacks
+```
+
+## No bloquees el bucle
+
+Mientras se ejecuta un callback, **nada más avanza**: ni temporizadores, ni otras peticiones. Divide el trabajo largo, delégalo a un [worker thread](/docs/avanzado/worker-threads) o usa APIs asíncronas. Y cuidado con `process.nextTick` recursivo: como se vacía antes de pasar de fase, puede dejar al resto esperando para siempre.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['bin/monedero.js']}>
+
+Demuestra que importar un CSV con streams **no bloquea** el event loop: mientras el pipeline lee y valida, un `setInterval` sigue funcionando y pinta un punto de progreso cada 100 ms en `stderr` (para no mezclarlo con la salida del programa):
+
+```js title="bin/monedero.js"
+case 'import': {
+  const [file] = args;
+  if (!file) throw new Error('Indica el archivo: monedero import gastos.csv');
+  const spinner = setInterval(() => process.stderr.write('.'), 100); // [!code ++]
+  try { // [!code ++]
+    const { valid, errors } = await readExpensesCsv(createReadStream(file));
+    // … igual que antes …
+    process.stderr.write('\n'); // [!code ++]
+    console.log(styleText('green', `✔ ${created.length} gastos importados`));
+  } finally { // [!code ++]
+    clearInterval(spinner); // si falla, el finally lo detiene igual // [!code ++]
+  } // [!code ++]
+  break;
+}
+```
+
+Prueba con un archivo grande (puedes generarlo con un bucle en `node -e`). Si cambiaras `createReadStream` por `readFileSync`, los puntos dejarían de aparecer: el hilo estaría ocupado leyendo.
+
+Con esto cierras el **hito 3**: la CLI de Monedero ya guarda, resume, importa y exporta. El siguiente paso es sacarla a la red con un servidor HTTP.
+
+</ProjectStep>

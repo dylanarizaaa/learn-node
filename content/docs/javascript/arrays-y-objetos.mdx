@@ -1,0 +1,101 @@
+---
+title: Arrays y objetos
+description: map, filter, reduce, for...of, Object.entries y fromEntries, spread e inmutabilidad. Cómo transformar colecciones de datos sin bucles enredados.
+difficulty: principiante
+time: 15
+prerequisites:
+  - javascript/funciones-y-closures
+related:
+  - datos/consultas-y-paginacion
+resources:
+  - title: MDN — Array
+    url: https://developer.mozilla.org/es/docs/Web/JavaScript/Reference/Global_Objects/Array
+  - title: MDN — Object.fromEntries
+    url: https://developer.mozilla.org/es/docs/Web/JavaScript/Reference/Global_Objects/Object/fromEntries
+keywords: [map, filter, reduce, for of, spread, object.entries, fromentries, inmutabilidad, freeze, funciones puras]
+milestone: 1
+---
+
+## La idea
+
+Un backend pasa gran parte del tiempo transformando colecciones: filas de la base de datos en JSON, líneas de un CSV en objetos, gastos en totales. Estas herramientas cubren casi todos los casos:
+
+```js
+const expenses = [
+  { amount: 1250, category: 'comida' },
+  { amount: 300, category: 'transporte' },
+  { amount: 4000, category: 'comida' },
+];
+
+expenses.map((e) => e.amount);                    // [1250, 300, 4000]
+expenses.filter((e) => e.category === 'comida');  // los dos de comida
+expenses.reduce((sum, e) => sum + e.amount, 0);   // 5550
+expenses.some((e) => e.amount > 3000);            // true
+expenses.find((e) => e.category === 'ocio');      // undefined
+```
+
+Para recorrer con lógica más compleja, `for...of` es igual de válido y a menudo más legible que un `reduce` largo.
+
+## Objetos como diccionarios
+
+```js
+const totals = { comida: 5250, transporte: 300 };
+
+Object.keys(totals);     // ['comida', 'transporte']
+Object.entries(totals);  // [['comida', 5250], ['transporte', 300]]
+
+// De una lista de pares a un objeto:
+Object.fromEntries(['a', 'b'].map((k) => [k, 0])); // { a: 0, b: 0 }
+```
+
+## Inmutabilidad
+
+Crear copias en lugar de modificar evita errores difíciles de rastrear, sobre todo cuando un objeto se comparte entre partes del programa:
+
+```js
+const original = { amount: 100, category: 'ocio' };
+const updated = { ...original, amount: 200 };   // copia con un campo cambiado
+const list = [...expenses, { amount: 50, category: 'otros' }]; // copia con un elemento más
+
+const CATEGORIES = Object.freeze(['comida', 'ocio']); // nadie podrá hacer push
+```
+
+## Funciones puras
+
+Una **función pura** devuelve siempre lo mismo para la misma entrada y no tiene efectos secundarios (no lee archivos, no escribe en consola, no cambia nada externo). Son las más fáciles de entender y de probar, por eso las reglas de negocio de Monedero se escriben así.
+
+## Errores comunes
+
+- Usar `map` solo para recorrer (sin usar el resultado): para eso está `for...of` o `forEach`.
+- Olvidar el valor inicial de `reduce`: con un array vacío, `[].reduce((a, b) => a + b)` lanza un error.
+- `sort()` modifica el array original y ordena como texto: `[10, 9].sort()` da `[10, 9]`. Usa `toSorted((a, b) => a - b)` para una copia ordenada numéricamente.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/domain/expenses.js']}>
+
+Crea el **dominio** de Monedero: las categorías y las reglas que no dependen de dónde se guardan los datos. `summarize` inicializa todas las categorías a cero con `Object.fromEntries` y suma con un `for...of`; `monthRange` calcula el último día del mes con un truco de `Date` (el día 0 del mes siguiente):
+
+<SourceFile path="src/domain/expenses.js" />
+
+```console
+$ node -e "import('./src/domain/expenses.js').then((m) => console.log(m.summarize([{ amount: 1250, category: 'comida' }, { amount: 300, category: 'ocio' }])))"
+{
+  count: 2,
+  total: 1550,
+  byCategory: {
+    comida: 1250,
+    transporte: 0,
+    hogar: 0,
+    ocio: 300,
+    salud: 0,
+    otros: 0
+  }
+}
+$ node -e "import('./src/domain/expenses.js').then((m) => console.log(m.monthRange('2028-02')))"
+{ from: '2028-02-01', to: '2028-02-29' }
+```
+
+Todas son funciones puras: las reutilizarás desde la CLI, la API, un worker thread y los tests sin cambiar una línea.
+
+</ProjectStep>

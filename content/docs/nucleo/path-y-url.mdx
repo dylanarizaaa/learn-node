@@ -1,0 +1,100 @@
+---
+title: Path y URL
+description: Construir rutas que funcionan en cualquier sistema con node:path, la diferencia entre cwd y la carpeta del módulo, import.meta y URLs de archivo.
+difficulty: principiante
+time: 10
+prerequisites:
+  - nucleo/sistema-de-archivos
+related:
+  - http/archivos-estaticos
+  - nucleo/modulos
+resources:
+  - title: Node.js — Path
+    url: https://nodejs.org/docs/latest/api/path.html
+  - title: Node.js — URL
+    url: https://nodejs.org/docs/latest/api/url.html
+keywords: [path, join, resolve, dirname, basename, extname, import.meta.dirname, cwd, url, fileurltopath, windows]
+milestone: 2
+---
+
+## La idea
+
+Windows separa carpetas con `\` y macOS/Linux con `/`. Nunca concatenes rutas a mano: usa `node:path`, que aplica las reglas del sistema donde corre el programa.
+
+```js
+import path from 'node:path';
+
+path.join('data', 'informes', '2026.json');  // 'data/informes/2026.json' (o con \ en Windows)
+path.resolve('data');                        // ruta absoluta desde la carpeta actual
+path.dirname('/app/src/server.js');          // '/app/src'
+path.basename('/app/src/server.js');         // 'server.js'
+path.extname('foto.final.png');              // '.png'
+path.parse('/app/a.txt');                    // { root, dir, base, ext, name }
+```
+
+## Dos «carpetas actuales»
+
+Es la confusión más habitual con rutas en Node:
+
+<Columns>
+  <Column title="process.cwd()">
+    Carpeta **desde la que ejecutaste** el comando. Las rutas relativas (`'data/x.json'`) se resuelven desde aquí. Cambia según dónde estés.
+  </Column>
+  <Column title="import.meta.dirname" tone="brand">
+    Carpeta **donde está el archivo** que se ejecuta. Siempre la misma. Úsala para encontrar archivos del propio proyecto.
+  </Column>
+</Columns>
+
+```js
+import { join } from 'node:path';
+
+// Siempre apunta a la carpeta "plantillas" junto a este archivo, se ejecute desde donde se ejecute:
+const templates = join(import.meta.dirname, 'plantillas');
+```
+
+## URLs
+
+`URL` es la misma clase del navegador. Sirve para analizar direcciones web y, en Node, también para rutas de archivo (`file://`), que es como los módulos ES identifican cada archivo:
+
+```js
+import { fileURLToPath } from 'node:url';
+
+const url = new URL('https://api.example.com/v1/gastos?mes=2026-11&limite=20');
+url.pathname;                    // '/v1/gastos'
+url.searchParams.get('mes');     // '2026-11'
+
+import.meta.url;                 // 'file:///home/ana/monedero/bin/monedero.js'
+fileURLToPath(import.meta.url);  // '/home/ana/monedero/bin/monedero.js'
+new URL('./datos.json', import.meta.url); // URL de un archivo junto a este módulo
+```
+
+Muchas funciones de `fs` aceptan directamente un objeto `URL` de tipo `file:`.
+
+## Errores comunes
+
+- Unir con `+`: `dir + '/' + file` falla en Windows y con barras duplicadas.
+- Confiar en una ruta que llega del usuario: `join('public', '../../etc/passwd')` sale de `public`. Lo verás en [archivos estáticos](/docs/http/archivos-estaticos).
+- Usar `__dirname` en un módulo ES: no existe; usa `import.meta.dirname`.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['bin/monedero.js']}>
+
+Arregla el fallo de la lección de npm: con `npm link`, `monedero` buscaba `data/gastos.json` en la carpeta donde estuvieras. Calcula la ruta desde la ubicación del propio archivo de la CLI:
+
+```js title="bin/monedero.js"
+import { join } from 'node:path'; // [!code ++]
+
+const DEFAULT_FILE = join(import.meta.dirname, '..', 'data', 'gastos.json'); // [!code ++]
+const store = createJsonStore('data/gastos.json'); // [!code --]
+const store = createJsonStore(DEFAULT_FILE); // [!code ++]
+```
+
+```console
+$ cd ~ && monedero
+2 gastos, 20,50 US$ en total
+```
+
+`import.meta.dirname` es `.../monedero/bin`, así que `..` sube a la raíz del proyecto, venga de donde venga la llamada.
+
+</ProjectStep>

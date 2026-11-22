@@ -1,0 +1,152 @@
+---
+title: Streams
+description: Procesar datos por trozos — streams legibles, escribibles y de transformación, pipeline, objectMode, Readable.from y for await.
+difficulty: intermedio
+time: 20
+prerequisites:
+  - nucleo/buffers
+  - nucleo/eventos
+related:
+  - avanzado/streams-avanzados
+  - http/archivos-estaticos
+resources:
+  - title: Node.js — Stream
+    url: https://nodejs.org/docs/latest/api/stream.html
+  - title: Node.js — Backpressure en streams
+    url: https://nodejs.org/en/learn/modules/backpressuring-in-streams
+keywords: [stream, readable, writable, transform, pipeline, pipe, objectmode, readable.from, for await, createreadstream, csv, memoria]
+milestone: 3
+---
+
+## La idea
+
+Con `readFile` cargas el archivo entero en memoria. Con un <Term slug="stream">stream</Term> lo procesas **por trozos** (*chunks*) a medida que llegan: un CSV de 5 GB se procesa con unos pocos KB de memoria, y empiezas a trabajar antes de que termine de leerse.
+
+<Flow
+  steps={[
+    { title: 'Readable', desc: 'archivo, petición HTTP, stdin' },
+    { title: 'Transform', desc: 'parsear, comprimir, filtrar', tone: 'brand' },
+    { title: 'Writable', desc: 'archivo, respuesta HTTP, stdout' },
+  ]}
+  caption="Los datos fluyen trozo a trozo por la tubería; ninguna etapa necesita tenerlos todos."
+/>
+
+## Tres formas de consumir
+
+```js
+import { createReadStream, createWriteStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
+import { createGzip } from 'node:zlib';
+
+// 1. pipeline: conecta etapas, propaga errores y cierra todo al terminar
+await pipeline(createReadStream('datos.csv'), createGzip(), createWriteStream('datos.csv.gz'));
+
+// 2. for await: los Readable son iterables asíncronos
+for await (const chunk of createReadStream('datos.csv')) {
+  console.log(`Trozo de ${chunk.length} bytes`);
+}
+
+// 3. Una función async como etapa final de pipeline
+await pipeline(createReadStream('datos.csv'), async function (source) {
+  for await (const chunk of source) { /* … */ }
+});
+```
+
+<Callout type="warning" title="Usa pipeline, no .pipe()">
+`a.pipe(b)` no propaga errores: si `a` falla, `b` queda abierto y el error se pierde. `pipeline` de `node:stream/promises` cierra todas las etapas y rechaza la promesa con el primer error.
+</Callout>
+
+## Crear tus propios streams
+
+- **`Readable.from(iterable)`** convierte un array, generador o iterador asíncrono en un stream.
+- **`new Transform({ transform(chunk, encoding, callback) {…} })`** recibe trozos y emite otros con `this.push(…)` o `callback(null, dato)`; `flush` se llama al final.
+- **`objectMode`**: por defecto los streams transportan bytes; en modo objeto transportan valores de JavaScript. Un parser CSV recibe bytes (`writableObjectMode: false`) y emite objetos (`readableObjectMode: true`).
+
+## Errores comunes
+
+- Leer el archivo entero con `readFile` y luego hacer `split('\n')`: funciona hasta que el archivo es grande.
+- Olvidar que un trozo puede cortar una línea (y un carácter) por la mitad: hay que guardar el resto para el siguiente trozo.
+- Ignorar los errores del stream: un stream que emite `'error'` sin listener tumba el proceso. `pipeline` lo resuelve.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/csv/csv.js', 'src/csv/read-expenses.js', 'bin/monedero.js']}>
+
+Completa `csv.js` con dos streams de transformación: `csvParser` convierte bytes en filas (guardando la línea incompleta de cada trozo y usando `StringDecoder` para no romper caracteres) y `expensesToCsv` hace lo contrario:
+
+<SourceFile path="src/csv/csv.js" lines="56-120" />
+
+Valida cada fila al vuelo y reúne los errores con su número de línea. Esta es la versión del hito 3, con validación manual; en el hito 5 la sustituirá un schema de Zod:
+
+```js title="src/csv/read-expenses.js"
+import { pipeline } from 'node:stream/promises';
+import { CATEGORIES } from '../domain/expenses.js';
+import { toCents } from '../lib/money.js';
+import { csvParser } from './csv.js';
+
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+export async function readExpensesCsv(source) {
+  const valid = [];
+  const errors = [];
+
+  await pipeline(source, csvParser(), async function (rows) {
+    for await (const { line, record } of rows) {
+      try {
+        if (!CATEGORIES.includes(record.categoria)) throw new RangeError(`Categoría no válida: "${record.categoria}"`);
+        if (record.fecha && !DATE.test(record.fecha)) throw new RangeError(`Fecha no válida: "${record.fecha}"`);
+        valid.push({
+          amount: toCents(record.importe),
+          category: record.categoria,
+          description: record.descripcion,
+          date: record.fecha || undefined,
+        });
+      } catch (error) {
+        errors.push({ line, message: error.message });
+      }
+    }
+  });
+
+  return { valid, errors };
+}
+```
+
+Añade los comandos `import` (todo o nada: si una fila falla, no se guarda ninguna) y `export` (escribe en `stdout`, así puedes redirigirlo a un archivo):
+
+```js title="bin/monedero.js"
+import { createReadStream } from 'node:fs';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { expensesToCsv } from '../src/csv/csv.js';
+import { readExpensesCsv } from '../src/csv/read-expenses.js';
+
+// dentro del switch de main():
+case 'import': {
+  const [file] = args;
+  if (!file) throw new Error('Indica el archivo: monedero import gastos.csv');
+  const { valid, errors } = await readExpensesCsv(createReadStream(file));
+  if (errors.length > 0) {
+    for (const { line, message } of errors) console.error(styleText('red', `  línea ${line}: ${message}`));
+    throw new Error(`Hay ${errors.length} filas con errores; no se importó nada`);
+  }
+  const created = await store.addMany(valid.map((e) => ({ ...e, date: e.date ?? today() })));
+  console.log(styleText('green', `✔ ${created.length} gastos importados`));
+  break;
+}
+case 'export': {
+  await pipeline(Readable.from(await listMonth(values.month)), expensesToCsv(), process.stdout);
+  break;
+}
+```
+
+```console
+$ node bin/monedero.js import mal.csv
+  línea 2: Importe no válido: "x"
+  línea 3: Categoría no válida: "viajes"
+✖ Hay 2 filas con errores; no se importó nada
+$ node bin/monedero.js import gastos.csv
+✔ 2 gastos importados
+$ node bin/monedero.js export > noviembre.csv
+```
+
+</ProjectStep>

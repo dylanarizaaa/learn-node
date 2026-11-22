@@ -43,10 +43,10 @@ export const sections: SectionConfig[] = [
     pages: [
       'modulos',
       'npm-y-package-json',
-      'process-y-argumentos',
-      'variables-de-entorno',
       'sistema-de-archivos',
       'path-y-url',
+      'process-y-argumentos',
+      'variables-de-entorno',
       'eventos',
       'buffers',
       'streams',

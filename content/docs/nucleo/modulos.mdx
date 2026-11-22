@@ -1,0 +1,111 @@
+---
+title: Módulos
+description: Módulos ES (import/export) y CommonJS (require), el prefijo node:, extensiones obligatorias, import.meta e import() dinámico.
+difficulty: principiante
+time: 15
+prerequisites:
+  - javascript/async-await
+related:
+  - nucleo/npm-y-package-json
+  - nucleo/path-y-url
+resources:
+  - title: Node.js — Módulos ECMAScript
+    url: https://nodejs.org/docs/latest/api/esm.html
+  - title: Node.js — Módulos CommonJS
+    url: https://nodejs.org/docs/latest/api/modules.html
+  - title: Node.js — Módulos integrados
+    url: https://nodejs.org/docs/latest/api/modules.html#built-in-modules
+keywords: [esm, import, export, require, module.exports, commonjs, type module, mjs, cjs, import.meta, import dinámico, node:]
+milestone: 2
+---
+
+## La idea
+
+Un **módulo** es un archivo que exporta cosas (funciones, constantes, clases) para que otros archivos las importen. Cada módulo tiene su propio ámbito: lo que no exportas es privado.
+
+```js title="src/lib/math.js"
+export const PI = 3.14159;                 // exportación con nombre
+export function area(r) { return PI * r * r; }
+export default function greet() {}         // exportación por defecto (una por módulo)
+```
+
+```js title="src/index.js"
+import greet, { area, PI } from './lib/math.js';
+import * as math from './lib/math.js';      // todo el módulo como objeto
+import { readFile } from 'node:fs/promises'; // módulo integrado
+import express from 'express';              // paquete de node_modules
+```
+
+## Las reglas de Node
+
+- **`"type": "module"`** en `package.json` activa los <Term slug="esm">módulos ES</Term> para los `.js`. Los archivos `.mjs` siempre son ESM y los `.cjs`, siempre CommonJS.
+- **Las rutas relativas llevan extensión**: `./lib/math.js`, nunca `./lib/math`.
+- **El prefijo `node:`** (`node:fs`, `node:path`) deja claro que es un módulo integrado y no un paquete de npm con el mismo nombre.
+- **Los imports se cargan una vez**: si dos archivos importan el mismo módulo, comparten la misma instancia.
+
+## CommonJS, el sistema antiguo
+
+Verás mucho código con `require`. Es <Term slug="commonjs">CommonJS</Term>, el sistema original de Node:
+
+<Columns>
+  <Column title="CommonJS">
+    ```js
+    const fs = require('node:fs');
+    module.exports = { area };
+    ```
+    Carga síncrona. `__dirname` y `__filename` disponibles.
+  </Column>
+  <Column title="Módulos ES" tone="good">
+    ```js
+    import fs from 'node:fs';
+    export { area };
+    ```
+    Estándar, `await` de nivel superior, `import.meta.dirname`.
+  </Column>
+</Columns>
+
+Desde Node 22 un módulo CommonJS puede hacer `require()` de un módulo ES (sin `await` de nivel superior), así que la convivencia es sencilla. Para proyectos nuevos, usa ESM.
+
+## import.meta e import()
+
+- `import.meta.dirname` y `import.meta.filename`: carpeta y ruta del archivo actual (equivalen a `__dirname` y `__filename`).
+- `import.meta.main`: `true` si el archivo se ejecutó directamente con `node archivo.js` y no fue importado.
+- `await import('./plugin.js')`: importación **dinámica**, cuando la ruta se decide en tiempo de ejecución o quieres cargar algo solo si hace falta.
+
+## Errores comunes
+
+- `ERR_MODULE_NOT_FOUND` al importar `./utils`: falta la extensión `.js`.
+- `require is not defined in ES module scope`: estás en ESM; usa `import`.
+- Dependencias circulares (A importa B y B importa A): suelen indicar que una pieza debería separarse en un tercer módulo.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['bin/monedero.js']}>
+
+Monedero va a tener un punto de entrada para la terminal en `bin/`, separado del código reutilizable en `src/`. Crea el esqueleto de la CLI importando los módulos que ya tienes (el `../` sale de `bin/` hacia la raíz):
+
+```js title="bin/monedero.js"
+#!/usr/bin/env node
+import { summarize } from '../src/domain/expenses.js';
+import { formatCents } from '../src/lib/money.js';
+import { loadExpenses } from '../src/storage/json-store.js';
+
+const { count, total } = summarize(await loadExpenses('data/gastos.json'));
+console.log(`${count} gastos, ${formatCents(total)} en total`);
+```
+
+Es el mismo código que `scripts/ver-gastos.js`, que ya puedes borrar. La primera línea (*shebang*) permitirá ejecutar el archivo como un comando; la aprovecharás en la siguiente lección. La estructura queda así:
+
+```tree title="monedero/"
+bin/
+  monedero.js * # entrada de la CLI
+src/
+  domain/expenses.js # reglas puras
+  lib/money.js
+  lib/errors.js
+  storage/json-store.js # lectura y escritura del JSON
+data/gastos.json
+package.json
+```
+
+</ProjectStep>

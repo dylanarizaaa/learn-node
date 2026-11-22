@@ -63,7 +63,7 @@ Para dinero eso es inaceptable. La solución estándar: **guardar enteros en la 
 
 Crea la primera pieza real de Monedero: convertir lo que escribe una persona (`"12,50"`, `"12.5"`, `12.5`) en céntimos. Usa una expresión regular para validar, desestructuración con valor por defecto para separar euros y céntimos, y `padEnd` para que `"5"` cuente como `50` céntimos:
 
-<SourceFile path="src/lib/money.js" lines="1-26" />
+<SourceFile path="src/lib/money.js" lines="1-25" />
 
 Pruébala desde la terminal con `node -e` (el `formatCents` del final del archivo lo verás en la siguiente lección):
 
