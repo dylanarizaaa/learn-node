@@ -1,0 +1,104 @@
+---
+title: PostgreSQL y ORMs
+description: Cuándo pasar de SQLite a PostgreSQL, el cliente pg con pool de conexiones, y qué aportan (y cuestan) Prisma y Drizzle.
+difficulty: intermedio
+time: 15
+prerequisites:
+  - datos/transacciones
+related:
+  - produccion/despliegue
+  - introduccion/mapa-del-ecosistema
+resources:
+  - title: node-postgres (pg)
+    url: https://node-postgres.com/
+  - title: Drizzle ORM
+    url: https://orm.drizzle.team/
+  - title: Prisma
+    url: https://www.prisma.io/docs
+keywords: ["postgresql", "postgres", "pg", "pool", "orm", "prisma", "drizzle", "query builder", "mongodb", "nosql", "docker compose"]
+milestone: 6
+---
+
+## ¿Cuándo dejar SQLite?
+
+SQLite es excelente para una app en **un servidor**: es rápida, sin administración, y una base de datos de varios GB va sobrada. Cambia a PostgreSQL cuando:
+
+- **Varias instancias** de la app (en varias máquinas) necesitan escribir en la misma base de datos.
+- Necesitas **réplicas**, copias gestionadas y restauración a un punto en el tiempo de un proveedor (RDS, Neon, Supabase…).
+- Hay **muchas escrituras concurrentes** (SQLite admite un escritor a la vez).
+- Quieres funciones avanzadas: búsqueda de texto completo, JSONB, extensiones geográficas.
+
+## node-postgres (pg)
+
+El cliente estándar. Usa un **pool** de conexiones: varias peticiones pueden consultar en paralelo, cada una con su conexión:
+
+```js
+import pg from 'pg';
+
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 10 });
+
+const { rows } = await pool.query(
+  'SELECT id, amount, category FROM expenses WHERE user_id = $1 AND date >= $2 ORDER BY date DESC LIMIT $3',
+  [userId, from, 20], // parámetros $1, $2… : la misma protección que con SQLite
+);
+```
+
+Las diferencias con `node:sqlite`: es **asíncrono** (`await` en cada consulta), los parámetros son posicionales (`$1`) y una transacción debe usar una conexión concreta del pool (`const client = await pool.connect()`).
+
+## ORMs y query builders
+
+Un <Term slug="orm">ORM</Term> genera el SQL por ti a partir de un modelo en código:
+
+<Columns>
+  <Column title="Prisma">
+    Esquema propio (`schema.prisma`), cliente generado y migraciones automáticas. Muy productivo; añade un paso de generación y una capa entre tú y el SQL.
+  </Column>
+  <Column title="Drizzle">
+    Esquema en TypeScript y una API que se parece mucho a SQL. Ligero, sin generación de código, fácil de razonar si ya sabes SQL.
+  </Column>
+</Columns>
+
+```ts
+// Drizzle: se lee casi como el SQL que genera
+const rows = await db.select().from(expenses)
+  .where(and(eq(expenses.userId, userId), gte(expenses.date, from)))
+  .orderBy(desc(expenses.date))
+  .limit(20);
+```
+
+Recomendación: **aprende SQL primero** (lo has hecho en esta sección). Un ORM te ahorra escribir consultas repetitivas, pero cuando una consulta es lenta o devuelve algo raro, necesitarás leer el SQL que genera.
+
+## ¿Y MongoDB?
+
+Las bases de datos de documentos (MongoDB) guardan objetos JSON sin esquema fijo. Encajan con datos muy variables o jerárquicos. Para la mayoría de aplicaciones de negocio, con relaciones claras (usuarios → gastos), una base relacional es la opción más segura.
+
+## Aplícalo al proyecto
+
+<ProjectStep>
+
+Monedero se queda con SQLite: es una app de un servidor y así no necesitas instalar nada. Pero gracias al repositorio, migrar sería un cambio **acotado**. Este sería el método `findById` con `pg`:
+
+```js title="src/expenses/expenses.repository.pg.js (ejemplo)"
+export function createExpensesRepository(pool) {
+  return {
+    async findById(id) {
+      const { rows } = await pool.query(
+        'SELECT id, amount, category, description, date, created_at AS "createdAt" FROM expenses WHERE id = $1',
+        [id],
+      );
+      return rows[0];
+    },
+    // … el resto de métodos con la misma forma
+  };
+}
+```
+
+Qué cambiaría en el resto del proyecto:
+
+- El **servicio** volvería a ser `async` (como en el hito 5), porque `pg` lo es.
+- Las **migraciones** se escribirían en el dialecto de PostgreSQL (`SERIAL` o `GENERATED ALWAYS AS IDENTITY`, `timestamptz`…).
+- Las **rutas, la validación y el dominio no cambiarían**.
+
+**Hito 6 completo**: Monedero guarda sus datos en SQLite, con migraciones, filtros, paginación, totales calculados por la base de datos e importación transaccional.
+
+</ProjectStep>

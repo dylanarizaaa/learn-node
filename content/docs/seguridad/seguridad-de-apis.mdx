@@ -1,0 +1,85 @@
+---
+title: Seguridad de APIs
+description: El OWASP API Top 10 aplicado a una API de Node — autorización, validación, límites, secretos, dependencias y errores — como lista de comprobación.
+difficulty: avanzado
+time: 18
+prerequisites:
+  - seguridad/rutas-protegidas
+  - seguridad/limitar-peticiones
+related:
+  - express/cors-y-cabeceras
+  - avanzado/modelo-de-permisos
+resources:
+  - title: OWASP API Security Top 10 (2023)
+    url: https://owasp.org/API-Security/editions/2023/en/0x11-t10/
+  - title: Node.js — Buenas prácticas de seguridad
+    url: https://nodejs.org/en/learn/getting-started/security-best-practices
+  - title: npm — npm audit
+    url: https://docs.npmjs.com/cli/commands/npm-audit
+keywords: ["seguridad", "owasp", "api top 10", "npm audit", "secretos", "inyección", "validación", "límites", "dependencias", "supply chain", "mass assignment"]
+milestone: 7
+---
+
+## La idea
+
+La seguridad no es una funcionalidad que se añade al final: es la suma de muchas decisiones pequeñas. Esta lista recorre los riesgos más comunes de una API y cómo los resuelve (o no) Monedero.
+
+## Lista de comprobación
+
+| Riesgo | Defensa | En Monedero |
+| --- | --- | --- |
+| Acceso a objetos ajenos (BOLA) | Filtrar por dueño en cada consulta | `user_id = :userId` en el SQL |
+| Autenticación débil | Hash lento, límite de intentos, tokens que caducan | scrypt, `rateLimit`, JWT de 2 h |
+| Asignación masiva | Aceptar solo los campos previstos | Zod elimina las claves desconocidas |
+| Consumo ilimitado | Límites de tamaño, paginación y peticiones | `express.json({ limit })`, `limit ≤ 100`, 10 000 filas por CSV |
+| Inyección | Parámetros, nunca concatenar | Consultas parametrizadas; columnas de lista cerrada |
+| Errores que filtran información | Mensajes genéricos en 5xx | `errorHandler` registra la traza y responde genérico |
+| Configuración insegura | Cabeceras, sin `X-Powered-By`, HTTPS | `helmet` |
+| Secretos expuestos | Variables de entorno, `.env` fuera de git | `.gitignore`, `.env.example` |
+| Dependencias vulnerables | Auditar y actualizar | `npm audit` en CI |
+
+## Dependencias: la otra superficie de ataque
+
+Cada paquete que instalas ejecuta código con tus permisos, y también sus dependencias. Hábitos:
+
+- **Pocas dependencias** y bien mantenidas. Antes de instalar, mira si Node ya lo trae.
+- **Lockfile en el repositorio** y `npm ci` en CI y producción.
+- **`npm audit`** para conocer vulnerabilidades publicadas; `npm audit fix` para actualizar dentro de los rangos permitidos.
+- Desconfía de paquetes con nombres parecidos a otros populares (*typosquatting*) y de scripts `postinstall` inesperados.
+
+## Errores comunes
+
+- Registrar cuerpos de petición completos: acabarás con contraseñas y tokens en los logs.
+- Devolver el objeto de la base de datos tal cual: hoy no tiene campos sensibles, mañana sí.
+- Pensar que «nadie conoce esta URL»: la seguridad por oscuridad no protege nada.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['package.json']}>
+
+Haz una revisión de seguridad de Monedero con la tabla de arriba y deja automatizado lo que se pueda:
+
+```console
+$ npm audit
+found 0 vulnerabilities
+$ npm audit --omit=dev    # solo lo que va a producción
+```
+
+```json title="package.json"
+"scripts": {
+  "audit:prod": "npm audit --omit=dev --audit-level=high"
+}
+```
+
+Comprueba a mano los dos puntos más fáciles de olvidar:
+
+```console
+$ curl -s -X POST localhost:3000/api/auth/register -H 'content-type: application/json' -d '{"email":"eva@example.com","password":"contraseña-segura","isAdmin":true}' | grep -c isAdmin
+0
+$ curl -s localhost:3000/api/expenses/1 -H "Authorization: Bearer $TOKEN_DE_EVA"
+{"error":{"code":"NOT_FOUND","message":"No existe el gasto 1"}}
+```
+
+El campo inventado `isAdmin` desaparece y el gasto de otra persona responde 404. **Hito 7 completo**: Monedero tiene usuarios, y cada uno solo ve lo suyo. En el hito 8 convertirás estas comprobaciones manuales en tests automáticos.
+
+</ProjectStep>

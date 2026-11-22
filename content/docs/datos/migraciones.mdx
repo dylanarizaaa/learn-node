@@ -1,0 +1,78 @@
+---
+title: Migraciones
+description: Versionar el esquema de la base de datos con archivos SQL numerados, aplicarlos una sola vez y en orden, y las reglas para no romper producción.
+difficulty: intermedio
+time: 12
+prerequisites:
+  - datos/node-sqlite
+related:
+  - datos/transacciones
+  - avanzado/cluster
+resources:
+  - title: SQLite — ALTER TABLE
+    url: https://www.sqlite.org/lang_altertable.html
+keywords: ["migraciones", "migrations", "esquema", "versionado", "alter table", "begin immediate", "schema", "evolución"]
+milestone: 6
+---
+
+## La idea
+
+El código evoluciona y el esquema de la base de datos también: una tabla nueva, una columna más, un índice. Pero en producción la base de datos **ya tiene datos**: no puedes borrarla y recrearla. Una <Term slug="migracion">migración</Term> es un archivo que describe **un cambio** del esquema. Se guardan en el repositorio junto al código y se aplican en orden:
+
+```tree title="src/db/migrations/"
+001-create-expenses.sql # hito 6
+002-create-users.sql # hito 7: usuarios y expenses.user_id
+003-index-expenses-user-date.sql # hito 9: rendimiento
+```
+
+Una tabla especial (`migrations`) recuerda cuáles se han aplicado, así que al arrancar solo se ejecutan las **pendientes**.
+
+## Las reglas
+
+1. **Nunca edites una migración ya aplicada** (en tu máquina, en la de otro o en producción). Si te equivocaste, escribe otra que lo corrija.
+2. **Cada migración en una transacción**: si falla a mitad, no queda medio aplicada. SQLite (y PostgreSQL) permiten cambios de esquema dentro de transacciones.
+3. **Cambios compatibles hacia atrás** cuando haya varias versiones del código en marcha a la vez (despliegues sin corte): primero añade la columna nueva, después cambia el código, y solo al final elimina la antigua.
+
+## Errores comunes
+
+- Crear las tablas con `CREATE TABLE IF NOT EXISTS` al arrancar: funciona el primer día, pero no sabe aplicar los cambios del segundo.
+- Añadir una columna `NOT NULL` sin valor por defecto a una tabla con filas: la base de datos no sabe qué poner en las existentes.
+- Dos procesos aplicando migraciones a la vez (varias instancias o un [cluster](/docs/avanzado/cluster)): necesitas un bloqueo.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/db/migrate.js', 'src/server.js', 'package.json']}>
+
+Escribe el sistema de migraciones de Monedero. Unas 40 líneas, sin dependencias:
+
+<SourceFile path="src/db/migrate.js" />
+
+Tres detalles:
+
+- `BEGIN IMMEDIATE` toma el bloqueo de escritura antes de leer qué migraciones faltan: si dos procesos arrancan a la vez, el segundo espera y luego ve que ya no queda nada pendiente.
+- Todas las migraciones pendientes van en una transacción: o se aplican todas o ninguna.
+- `import.meta.main` permite usar el mismo archivo como módulo y como script (`node src/db/migrate.js`).
+
+Aplica las migraciones al arrancar el servidor:
+
+```js title="src/server.js"
+import { migrate } from './db/migrate.js'; // [!code ++]
+
+const db = openDatabase(process.env.DATABASE_PATH ?? 'data/monedero.db');
+migrate(db, { log: console.log }); // [!code ++]
+```
+
+Y añade un script para ejecutarlas sin arrancar el servidor:
+
+```json title="package.json"
+"migrate": "node --env-file-if-exists=.env src/db/migrate.js"
+```
+
+```console
+$ npm run migrate
+Migración aplicada: 001-create-expenses.sql
+$ npm run migrate
+La base de datos ya está al día.
+```
+
+</ProjectStep>

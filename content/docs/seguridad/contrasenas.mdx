@@ -1,0 +1,72 @@
+---
+title: Guardar contraseñas
+description: Por qué nunca se guardan contraseñas, qué es un hash lento con sal, cómo usar scrypt de node:crypto y cómo comparar sin filtrar información.
+difficulty: intermedio
+time: 15
+prerequisites:
+  - datos/transacciones
+  - javascript/promesas
+related:
+  - seguridad/registro-y-login
+  - seguridad/jwt
+resources:
+  - title: OWASP — Password Storage Cheat Sheet
+    url: https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html
+  - title: Node.js — crypto.scrypt
+    url: https://nodejs.org/docs/latest/api/crypto.html#cryptoscryptpassword-salt-keylen-options-callback
+keywords: ["contraseñas", "password", "hash", "scrypt", "argon2", "bcrypt", "sal", "salt", "timingsafeequal", "crypto", "owasp"]
+milestone: 7
+---
+
+## La idea
+
+**Nunca guardes contraseñas**, ni en texto plano ni cifradas (lo cifrado se puede descifrar). Guarda un <Term slug="hash">hash</Term>: el resultado de una función de un solo sentido. Al iniciar sesión, calculas el hash de lo que escribe la persona y lo comparas con el guardado.
+
+Pero no vale cualquier hash. SHA-256 está diseñado para ser **rápido**, y eso es justo lo que no quieres: si alguien roba tu base de datos, puede probar miles de millones de contraseñas por segundo. Las funciones para contraseñas son **lentas a propósito** y usan mucha memoria: **argon2id**, **scrypt** o **bcrypt**.
+
+## La sal
+
+Si dos personas usan `123456`, sus hashes serían idénticos y un atacante usaría tablas precalculadas. La <Term slug="sal">sal</Term> es un valor aleatorio distinto por usuario que se mezcla con la contraseña: mismo texto, hashes distintos. No es secreta: se guarda junto al hash.
+
+## scrypt en Node
+
+`node:crypto` incluye scrypt, una de las opciones recomendadas por OWASP, sin instalar nada. Sus parámetros controlan el coste: `N` (CPU y memoria), `r` (tamaño de bloque) y `p` (paralelismo). OWASP recomienda como mínimo `N = 2^17, r = 8, p = 1`, que usa unos 128 MiB y tarda del orden de unos cientos de milisegundos.
+
+```js
+import { randomBytes, scrypt } from 'node:crypto';
+import { promisify } from 'node:util';
+
+const scryptAsync = promisify(scrypt);
+const salt = randomBytes(16);
+const hash = await scryptAsync('mi-contraseña', salt, 64, { N: 2 ** 17, r: 8, p: 1, maxmem: 256 * 1024 * 1024 });
+```
+
+La versión asíncrona se ejecuta en el pool de hilos de libuv: el event loop sigue libre mientras calcula.
+
+## Comparar sin filtrar información
+
+`hashA === hashB` se detiene en el primer byte distinto: midiendo tiempos, un atacante podría deducir cuántos bytes acierta. `crypto.timingSafeEqual` compara en **tiempo constante**.
+
+## Errores comunes
+
+- Usar `md5`, `sha1` o `sha256` para contraseñas.
+- Una sal fija para todos (o ninguna).
+- Limitar la contraseña a 8–16 caracteres o prohibir símbolos: deja que usen frases largas (pon un máximo razonable, como 128, para no recibir megabytes).
+- Usar `scryptSync` en un servidor: bloquea el event loop cientos de milisegundos por cada login.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/users/password.js']}>
+
+Empieza el hito 7: Monedero tendrá cuentas de usuario. Primero, el módulo de contraseñas. El hash guardado incluye algoritmo, parámetros y sal (`scrypt$N$r$p$sal$hash`): si en el futuro subes el coste, los hashes antiguos se siguen verificando con sus propios parámetros.
+
+<SourceFile path="src/users/password.js" />
+
+```console
+$ node -e "import('./src/users/password.js').then(async (m) => { const h = await m.hashPassword('secreto'); console.log(h.slice(0, 40) + '…', await m.verifyPassword('secreto', h), await m.verifyPassword('otro', h)); })"
+scrypt$131072$8$1$EwD0gwPDced0baQSFCnwEg… true false
+```
+
+(La sal cambia en cada ejecución, así que verás otra.) Más adelante, el registro usará `hashPassword` y el login, `verifyPassword`.
+
+</ProjectStep>

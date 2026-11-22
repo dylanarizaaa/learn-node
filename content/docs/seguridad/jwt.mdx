@@ -1,0 +1,89 @@
+---
+title: JSON Web Tokens
+description: Qué contiene un JWT, cómo se firma y verifica con jose, caducidad, qué no guardar dentro y las alternativas con sesiones.
+difficulty: intermedio
+time: 15
+prerequisites:
+  - seguridad/contrasenas
+related:
+  - seguridad/rutas-protegidas
+  - seguridad/registro-y-login
+resources:
+  - title: jwt.io — Introducción a JWT
+    url: https://jwt.io/introduction
+  - title: jose — Documentación
+    url: https://github.com/panva/jose
+  - title: OWASP — JSON Web Token Cheat Sheet
+    url: https://cheatsheetseries.owasp.org/cheatsheets/JSON_Web_Token_for_Java_Cheat_Sheet.html
+keywords: ["jwt", "json web token", "jose", "hs256", "firma", "payload", "exp", "sub", "bearer", "sesiones", "cookies", "refresh token"]
+milestone: 7
+---
+
+## La idea
+
+Tras el login, el servidor necesita reconocer a la persona en cada petición. Un <Term slug="jwt">JWT</Term> es un texto que el servidor **firma** y entrega al cliente; el cliente lo envía de vuelta en cada petición y el servidor verifica la firma. Si la firma es válida, puede confiar en lo que dice el token **sin consultar la base de datos**.
+
+```text
+eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiI3IiwiZW1haWwiOiJhbmFAZXhhbXBsZS5jb20iLCJleHAiOjE3OTUzMzIwMDB9.k3x…
+└──── cabecera ─────┘└──────────────────────── datos (payload) ──────────────────────────┘└ firma ┘
+```
+
+Las dos primeras partes son JSON en base64url: **cualquiera puede leerlas**. La firma (HMAC con un secreto del servidor) garantiza que nadie las modificó.
+
+```json
+{ "sub": "7", "email": "ana@example.com", "iat": 1795324800, "exp": 1795332000 }
+```
+
+- `sub` (*subject*): el id del usuario.
+- `iat` y `exp`: cuándo se emitió y cuándo caduca.
+
+## Lo que debes saber
+
+- **No metas secretos ni datos sensibles** en el payload: se lee sin la clave.
+- **Caducidad corta** (minutos u horas). Un JWT no se puede «cerrar» antes de que caduque sin mantener una lista de revocados; para sesiones largas se usan *refresh tokens*.
+- **Fija el algoritmo al verificar** (`algorithms: ['HS256']`): evita ataques que cambian el `alg` de la cabecera.
+- **El secreto**, largo y aleatorio (32 bytes o más), en una variable de entorno.
+
+## JWT frente a sesiones
+
+| | JWT (Bearer) | Sesión con cookie |
+| --- | --- | --- |
+| Estado en el servidor | No (se verifica la firma) | Sí (tabla o Redis de sesiones) |
+| Cerrar sesión al instante | Difícil | Fácil: borrar la sesión |
+| Clientes | APIs, apps móviles, CLIs | Webs del mismo dominio |
+
+Para una web tradicional, una sesión en cookie `HttpOnly` suele ser más sencilla y segura. Para una API consumida por apps y scripts, como Monedero, un JWT en la cabecera `Authorization: Bearer` es lo habitual.
+
+## Errores comunes
+
+- Guardar el JWT en `localStorage` de una web vulnerable a XSS: cualquier script inyectado lo roba.
+- Usar la librería sin verificar (`decode` en lugar de `verify`).
+- Secretos cortos o de ejemplo (`secret`, `changeme`).
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/users/tokens.js', 'package.json']}>
+
+Instala `jose` (sin dependencias, mantenida y compatible con APIs web estándar) y crea el servicio de tokens. Es una fábrica: recibe el secreto y la duración desde fuera, sin leer `process.env` por dentro:
+
+```bash
+npm install jose
+```
+
+<SourceFile path="src/users/tokens.js" />
+
+Añade el secreto a la configuración local:
+
+```dotenv title=".env.example"
+# Secreto para firmar los JWT (mínimo 32 caracteres). Genera uno con:
+#   node -e "console.log(crypto.randomBytes(32).toString('base64url'))"
+JWT_SECRET=cambia-esto-por-un-secreto-largo-y-aleatorio
+JWT_EXPIRES_IN=2h
+```
+
+```console
+$ node -e "console.log(crypto.randomBytes(32).toString('base64url'))"
+x4Qm0rS1c7Zf2N8kP5wB9yHtVeL3jDaUoGiRqXnKs6E
+```
+
+</ProjectStep>

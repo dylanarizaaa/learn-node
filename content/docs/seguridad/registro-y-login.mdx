@@ -1,0 +1,88 @@
+---
+title: Registro e inicio de sesión
+description: Tabla de usuarios, registro con email único, login sin revelar qué emails existen y respuestas que nunca incluyen el hash.
+difficulty: intermedio
+time: 18
+prerequisites:
+  - seguridad/jwt
+  - datos/migraciones
+related:
+  - seguridad/rutas-protegidas
+  - seguridad/limitar-peticiones
+resources:
+  - title: OWASP — Authentication Cheat Sheet
+    url: https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html
+keywords: ["registro", "login", "usuarios", "email único", "unique", "enumeración de usuarios", "409", "401", "auth service"]
+milestone: 7
+---
+
+## La idea
+
+El flujo completo tiene dos operaciones:
+
+<Flow
+  steps={[
+    { title: 'POST /register', desc: 'email + contraseña' },
+    { title: 'hash + guardar', desc: 'scrypt, UNIQUE(email)' },
+    { title: 'Token', desc: 'JWT firmado', tone: 'brand' },
+  ]}
+/>
+
+<Flow
+  steps={[
+    { title: 'POST /login', desc: 'email + contraseña' },
+    { title: 'buscar + verificar', desc: 'timingSafeEqual' },
+    { title: 'Token', desc: 'o 401 genérico', tone: 'brand' },
+  ]}
+/>
+
+## Detalles que marcan la diferencia
+
+- **Normaliza el email** (minúsculas, sin espacios) antes de guardarlo y de buscarlo.
+- **La base de datos garantiza la unicidad** con `UNIQUE`: comprobar antes con un `SELECT` no basta si llegan dos registros a la vez.
+- **El mismo error para «email no existe» y «contraseña incorrecta»**: si respondes distinto, revelas qué emails tienen cuenta (enumeración de usuarios).
+- **El mismo tiempo de respuesta** en ambos casos: si el email no existe, verifica igualmente contra un hash de relleno. Si no, un login a un email inexistente respondería en 1 ms y uno real en 300 ms.
+- **Nunca devuelvas el hash** en ninguna respuesta.
+
+## Errores comunes
+
+- Mensajes como «Ese email no está registrado»: útiles para la persona, más útiles para un atacante.
+- Guardar el email tal cual: `Ana@Example.com` y `ana@example.com` serían dos cuentas.
+- Iniciar sesión automáticamente sin verificar el email en apps donde importa (aquí no lo hacemos; es uno de los [retos](/docs/monedero/retos)).
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/db/migrations/002-create-users.sql', 'src/users/users.repository.js', 'src/users/auth.service.js', 'src/users/auth.routes.js', 'src/app.js']}>
+
+Una migración nueva crea la tabla de usuarios y añade a cada gasto su dueño. `COLLATE NOCASE` hace que el `UNIQUE` no distinga mayúsculas:
+
+<SourceFile path="src/db/migrations/002-create-users.sql" />
+
+El repositorio de usuarios convierte la violación de `UNIQUE` (código 2067 de SQLite) en un `ConflictError` (409):
+
+<SourceFile path="src/users/users.repository.js" />
+
+El servicio de autenticación aplica las reglas de arriba, incluido el hash de relleno (se calcula la primera vez que hace falta y se reutiliza):
+
+<SourceFile path="src/users/auth.service.js" />
+
+Y las rutas. Validan con Zod y normalizan el email. `limiter` y `requireAuth` son middleware que escribirás en las dos lecciones siguientes; mientras tanto puedes pasar `(req, res, next) => next()`:
+
+<SourceFile path="src/users/auth.routes.js" />
+
+```js title="src/app.js"
+const tokens = createTokenService({ secret: process.env.JWT_SECRET, expiresIn: process.env.JWT_EXPIRES_IN }); // [!code ++]
+const auth = createAuthService({ users: createUsersRepository(db), tokens }); // [!code ++]
+app.use('/api/auth', authRouter({ auth, requireAuth, limiter })); // [!code ++]
+```
+
+(En el hito 10 esos `process.env` pasarán a un objeto `config` validado.)
+
+```console
+$ curl -X POST localhost:3000/api/auth/register -H 'content-type: application/json' -d '{"email":"Ana@Example.com","password":"contraseña-segura"}'
+{"user":{"id":1,"email":"ana@example.com","createdAt":"2026-11-22T05:31:32.398Z"},"token":"eyJhbGciOiJIUzI1NiJ9…"}
+$ curl -X POST localhost:3000/api/auth/login -H 'content-type: application/json' -d '{"email":"ana@example.com","password":"otra"}'
+{"error":{"code":"UNAUTHORIZED","message":"Email o contraseña incorrectos"}}
+```
+
+</ProjectStep>

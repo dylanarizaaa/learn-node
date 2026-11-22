@@ -1,0 +1,116 @@
+---
+title: Rutas protegidas
+description: Un middleware que verifica el token y deja el usuario en req.user, y cómo hacer que cada consulta solo vea los datos de su dueño.
+difficulty: intermedio
+time: 18
+prerequisites:
+  - seguridad/registro-y-login
+  - express/middleware
+related:
+  - seguridad/seguridad-de-apis
+  - calidad/tests-de-integracion
+resources:
+  - title: OWASP API Security — Broken Object Level Authorization
+    url: https://owasp.org/API-Security/editions/2023/en/0xa1-broken-object-level-authorization/
+keywords: ["autenticación", "autorización", "middleware", "bearer", "req.user", "401", "403", "404", "bola", "idor", "multiusuario", "user_id"]
+milestone: 7
+---
+
+## Autenticación y autorización
+
+Son dos preguntas distintas:
+
+- **Autenticación**: ¿quién eres? → si el token falta o no es válido, `401 Unauthorized`.
+- **Autorización**: ¿puedes hacer esto? → si no, `403 Forbidden`… o `404`, como verás.
+
+La autenticación se resuelve una vez, en un middleware. La autorización hay que aplicarla **en cada acceso a datos**.
+
+## El fallo más común de las APIs
+
+El primer puesto del OWASP API Top 10 es *Broken Object Level Authorization* (también llamado IDOR): la API comprueba que hay un usuario, pero no que el objeto pedido **es suyo**.
+
+```js
+// ⛔ Cualquier usuario autenticado lee el gasto 7 de otra persona
+router.get('/:id', (req, res) => res.json(repository.findById(id)));
+
+// ✅ El dueño forma parte de la consulta
+router.get('/:id', (req, res) => res.json(repository.findById(req.user.id, id)));
+```
+
+Poner `user_id = :userId` **dentro del SQL** es más seguro que buscar y luego comparar en JavaScript: es imposible olvidarlo en un camino del código.
+
+<Callout type="tip" title="¿403 o 404?">
+Si respondes 403 a «el gasto 7 existe pero no es tuyo», confirmas que existe. Para recursos privados, responde **404**: desde fuera, un gasto ajeno y uno inexistente son indistinguibles.
+</Callout>
+
+## Errores comunes
+
+- Leer el id del usuario del cuerpo o de la query (`req.body.userId`) en lugar del token verificado.
+- Proteger las rutas «principales» y olvidar las secundarias (exportar, informes, eventos).
+- Verificar el token y no comprobar el algoritmo o la caducidad (jose lo hace por ti con `jwtVerify`).
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/middleware/authenticate.js', 'src/app.js', 'src/expenses/expenses.repository.js', 'src/expenses/expenses.service.js', 'src/expenses/expenses.routes.js']}>
+
+El middleware de autenticación. Es una fábrica que recibe el servicio de tokens; como es `async`, Express 5 lleva sus errores al manejador central:
+
+<SourceFile path="src/middleware/authenticate.js" />
+
+Protege todo `/api/expenses` montando el middleware delante del router:
+
+```js title="src/app.js"
+const requireAuth = authenticate(tokens); // [!code ++]
+app.use('/api/expenses', expensesRouter({ expenses })); // [!code --]
+app.use('/api/expenses', requireAuth, expensesRouter({ expenses })); // [!code ++]
+```
+
+Ahora el cambio más importante del hito: **cada gasto pertenece a un usuario**. El repositorio recibe `userId` y lo incluye en todas las consultas:
+
+```js title="src/expenses/expenses.repository.js"
+const insert = db.prepare(`
+  INSERT INTO expenses (amount, category, description, date) // [!code --]
+  VALUES (:amount, :category, :description, :date) // [!code --]
+  INSERT INTO expenses (user_id, amount, category, description, date) // [!code ++]
+  VALUES (:userId, :amount, :category, :description, :date) // [!code ++]
+  RETURNING ${COLUMNS}`);
+const findById = db.prepare(`SELECT ${COLUMNS} FROM expenses WHERE id = :id`); // [!code --]
+const findById = db.prepare(`SELECT ${COLUMNS} FROM expenses WHERE id = :id AND user_id = :userId`); // [!code ++]
+
+function where({ userId, from, to, category }) {
+  const conditions = ['1 = 1']; // [!code --]
+  const params = {}; // [!code --]
+  const conditions = ['user_id = :userId']; // [!code ++]
+  const params = { userId }; // [!code ++]
+```
+
+Lo mismo en `update`, `remove`, `totalsByCategory` y `createMany` (el archivo final completo está en [Puesta en marcha](/docs/monedero/puesta-en-marcha)). El servicio pasa el usuario a todas sus funciones:
+
+```js title="src/expenses/expenses.service.js"
+create(data) { // [!code --]
+  const expense = repository.create({ ...data, date: data.date ?? today() }); // [!code --]
+  events.emit('expense.created', expense); // [!code --]
+create(userId, data) { // [!code ++]
+  const expense = repository.create({ ...data, userId, date: data.date ?? today() }); // [!code ++]
+  events.emit('expense.created', { userId, expense }); // [!code ++]
+  return expense;
+},
+```
+
+Y las rutas lo toman **siempre** del token verificado:
+
+```js title="src/expenses/expenses.routes.js"
+res.status(201).json(expenses.create(data)); // [!code --]
+res.status(201).json(expenses.create(req.user.id, data)); // [!code ++]
+```
+
+Los gastos creados antes de este hito quedaron con `user_id` NULL (la migración no sabía de quién eran) y ya no aparecen en ninguna consulta. En una app real, escribirías una migración de datos para asignarlos.
+
+```console
+$ curl localhost:3000/api/expenses
+{"error":{"code":"UNAUTHORIZED","message":"Falta la cabecera Authorization: Bearer <token>"}}
+$ curl localhost:3000/api/expenses -H "Authorization: Bearer $TOKEN"
+{"items":[],"total":0,"limit":20,"offset":0}
+```
+
+</ProjectStep>

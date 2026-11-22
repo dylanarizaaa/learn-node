@@ -1,0 +1,103 @@
+---
+title: SQL esencial
+description: Tablas, tipos, restricciones y las consultas que usarás el 90 % del tiempo — INSERT, SELECT, UPDATE, DELETE, ORDER BY, LIMIT y GROUP BY.
+difficulty: intermedio
+time: 18
+prerequisites:
+  - express/arquitectura-por-capas
+related:
+  - datos/node-sqlite
+  - datos/consultas-y-paginacion
+resources:
+  - title: SQLite — Lenguaje SQL
+    url: https://www.sqlite.org/lang.html
+  - title: SQLBolt — Lecciones interactivas
+    url: https://sqlbolt.com/
+keywords: ["sql", "create table", "insert", "select", "update", "delete", "where", "order by", "limit", "group by", "primary key", "not null", "check", "default", "relacional"]
+milestone: 6
+---
+
+## La idea
+
+Una base de datos relacional guarda los datos en **tablas** (filas y columnas) y los consulta con **SQL**, un lenguaje declarativo: dices *qué* quieres, no *cómo* buscarlo. Frente a un archivo JSON, ganas:
+
+- **Consultas eficientes** sin cargar todo en memoria (filtrar, ordenar, paginar, sumar).
+- **Integridad**: tipos, valores obligatorios, reglas (`CHECK`) y relaciones que la base de datos hace cumplir.
+- **Escrituras seguras** con varias peticiones a la vez y [transacciones](/docs/datos/transacciones).
+
+## Crear una tabla
+
+```sql
+CREATE TABLE products (
+  id         INTEGER PRIMARY KEY,           -- identificador único, autoincremental
+  name       TEXT    NOT NULL,              -- obligatorio
+  price      INTEGER NOT NULL CHECK (price >= 0),
+  stock      INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+## Las cuatro operaciones (CRUD)
+
+```sql
+INSERT INTO products (name, price) VALUES ('Café', 350);
+
+SELECT id, name, price FROM products
+WHERE price < 1000 AND name LIKE 'C%'
+ORDER BY price DESC
+LIMIT 10 OFFSET 0;
+
+UPDATE products SET price = 400 WHERE id = 1;
+
+DELETE FROM products WHERE id = 1;
+```
+
+<Callout type="danger" title="UPDATE y DELETE sin WHERE">
+`DELETE FROM products;` borra **todas** las filas. Escribe siempre el `WHERE` primero.
+</Callout>
+
+## Agregar
+
+`GROUP BY` agrupa filas y las funciones de agregado (`COUNT`, `SUM`, `AVG`, `MIN`, `MAX`) calculan un valor por grupo:
+
+```sql
+SELECT category, COUNT(*) AS count, SUM(amount) AS total
+FROM expenses
+WHERE date BETWEEN '2026-11-01' AND '2026-11-30'
+GROUP BY category
+ORDER BY total DESC;
+```
+
+Este cálculo, que en el hito 1 hacía `summarize` recorriendo un array en JavaScript, la base de datos lo hace sin enviar las filas a Node.
+
+## Errores comunes
+
+- Guardar dinero como `REAL` (coma flotante): mismos problemas de redondeo que en JavaScript. Usa enteros en céntimos.
+- Fechas en formatos ambiguos (`22/11/2026`): guárdalas como texto ISO (`2026-11-22`), que además se ordena bien alfabéticamente.
+- Concatenar valores en el SQL: abre la puerta a la <Term slug="inyeccion-sql">inyección SQL</Term>. Lo verás en [Consultas y paginación](/docs/datos/consultas-y-paginacion).
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/db/migrations/001-create-expenses.sql']}>
+
+Empieza el hito 6 escribiendo la tabla de gastos. Importes en céntimos con una restricción `CHECK` (la base de datos rechazará importes no positivos aunque un bug en el código los deje pasar) y fechas como texto ISO:
+
+<SourceFile path="src/db/migrations/001-create-expenses.sql" />
+
+Pruébala en una base de datos en memoria con el SQLite que trae Node:
+
+```console
+$ node -e "const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(':memory:'); db.exec(require('node:fs').readFileSync('src/db/migrations/001-create-expenses.sql', 'utf8')); db.exec(\"INSERT INTO expenses (amount, category, date) VALUES (1250, 'comida', '2026-11-22')\"); console.log(db.prepare('SELECT id, amount, category, date FROM expenses').all())"
+[
+  [Object: null prototype] {
+    id: 1,
+    amount: 1250,
+    category: 'comida',
+    date: '2026-11-22'
+  }
+]
+```
+
+El archivo está en una carpeta `migrations/` con un número delante: en [Migraciones](/docs/datos/migraciones) verás por qué.
+
+</ProjectStep>

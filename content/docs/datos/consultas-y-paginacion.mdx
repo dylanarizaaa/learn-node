@@ -1,0 +1,153 @@
+---
+title: Consultas y paginación
+description: Filtros dinámicos con parámetros, inyección SQL y cómo evitarla, paginación con LIMIT/OFFSET y por cursor, y agregados con GROUP BY.
+difficulty: intermedio
+time: 18
+prerequisites:
+  - datos/node-sqlite
+related:
+  - seguridad/seguridad-de-apis
+  - avanzado/rendimiento
+resources:
+  - title: OWASP — Prevención de inyección SQL
+    url: https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html
+  - title: Use The Index, Luke — Paginación
+    url: https://use-the-index-luke.com/no-offset
+keywords: ["consultas", "filtros", "where dinámico", "inyección sql", "parámetros", "paginación", "limit", "offset", "cursor", "count", "group by"]
+milestone: 6
+---
+
+## Inyección SQL
+
+Si construyes el SQL pegando texto que viene del cliente, el cliente puede escribir SQL:
+
+```js
+// ⛔ NUNCA
+db.prepare(`SELECT * FROM expenses WHERE category = '${req.query.category}'`).all();
+// con ?category=x' OR '1'='1  →  devuelve todos los gastos de todo el mundo
+```
+
+La solución es siempre la misma: **parámetros**. El valor viaja separado del SQL y la base de datos nunca lo interpreta como código:
+
+```js
+// ✅ SIEMPRE
+db.prepare('SELECT * FROM expenses WHERE category = :category').all({ category: req.query.category });
+```
+
+Los parámetros sirven para **valores**. Los nombres de columnas o el sentido de un `ORDER BY` no pueden ser parámetros: si dependen del cliente, elígelos de una **lista cerrada**.
+
+## Filtros dinámicos
+
+Cuando los filtros son opcionales, construye el `WHERE` a partir de fragmentos **fijos** y acumula los parámetros:
+
+```js
+const conditions = [];
+const params = {};
+if (category) {
+  conditions.push('category = :category');
+  params.category = category;
+}
+const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+```
+
+El texto del SQL solo contiene piezas escritas por ti; los datos van en `params`.
+
+## Paginación
+
+<Columns>
+  <Column title="LIMIT / OFFSET">
+    `LIMIT 20 OFFSET 40` → página 3. Sencilla y permite saltar a cualquier página. Con offsets muy altos se vuelve lenta (la base de datos recorre y descarta las filas anteriores).
+  </Column>
+  <Column title="Por cursor" tone="brand">
+    `WHERE (date, id) < (:lastDate, :lastId) ORDER BY date DESC, id DESC LIMIT 20`. Rápida a cualquier profundidad y estable si se insertan filas. Solo permite «siguiente».
+  </Column>
+</Columns>
+
+Para una API pequeña, `LIMIT/OFFSET` con un máximo (por ejemplo, 100 por página) es suficiente. Devuelve también el `total` para que el cliente sepa cuántas páginas hay. Y **ordena siempre** por algo único (añade `id` al final): sin un orden estable, la misma fila puede aparecer en dos páginas.
+
+## Errores comunes
+
+- Sin límite máximo: `?limit=1000000` y la consulta devuelve la tabla entera.
+- Paginar en JavaScript (`all()` y luego `slice`): cargas todo para devolver 20 filas.
+- Calcular totales en JavaScript con filas que podría agregar la base de datos.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/expenses/expenses.repository.js', 'src/expenses/expenses.service.js']}>
+
+Añade al repositorio el listado con filtros y paginación, y los totales por categoría. El schema `listExpensesSchema` que escribiste con Zod ya valida `limit` (1–100) y `offset`:
+
+```js title="src/expenses/expenses.repository.js"
+const totalsByCategory = db.prepare(`
+  SELECT category, SUM(amount) AS total, COUNT(*) AS count
+  FROM expenses
+  WHERE date BETWEEN :from AND :to
+  GROUP BY category`);
+
+/** Construye el WHERE de los listados a partir de los filtros presentes. */
+function where({ from, to, category }) {
+  const conditions = ['1 = 1']; // siempre verdadero: simplifica el join con AND
+  const params = {};
+  if (from) {
+    conditions.push('date >= :from');
+    params.from = from;
+  }
+  if (to) {
+    conditions.push('date <= :to');
+    params.to = to;
+  }
+  if (category) {
+    conditions.push('category = :category');
+    params.category = category;
+  }
+  return { sql: conditions.join(' AND '), params };
+}
+
+// en el objeto que devuelve el repositorio:
+list({ from, to, category, limit = 20, offset = 0 }) {
+  const filter = where({ from, to, category });
+  const items = db
+    .prepare(`SELECT ${COLUMNS} FROM expenses WHERE ${filter.sql}
+              ORDER BY date DESC, id DESC LIMIT :limit OFFSET :offset`)
+    .all({ ...filter.params, limit, offset })
+    .map(toExpense);
+  const { total } = db.prepare(`SELECT COUNT(*) AS total FROM expenses WHERE ${filter.sql}`).get(filter.params);
+  return { items, total };
+},
+
+totalsByCategory({ from, to }) {
+  return totalsByCategory.all({ from, to }).map(toExpense);
+},
+```
+
+El servicio delega el filtrado y la suma en SQL. El resumen completa con ceros las categorías sin gastos:
+
+```js title="src/expenses/expenses.service.js"
+list({ month, category, limit, offset }) {
+  const range = month ? monthRange(month) : {};
+  const { items, total } = repository.list({ ...range, category, limit, offset });
+  return { items, total, limit, offset };
+},
+
+summary(month = currentMonth()) {
+  const rows = repository.totalsByCategory(monthRange(month));
+  const byCategory = Object.fromEntries(CATEGORIES.map((category) => [category, 0]));
+  let total = 0;
+  let count = 0;
+  for (const row of rows) {
+    byCategory[row.category] = row.total;
+    total += row.total;
+    count += row.count;
+  }
+  return { month, count, total, byCategory };
+},
+```
+
+```console
+$ curl "localhost:3000/api/expenses?month=2026-11&limit=1"
+{"items":[{"id":2,"amount":300,"category":"ocio","description":"","date":"2026-11-21","createdAt":"…"}],"total":2,"limit":1,"offset":0}
+```
+
+La respuesta del listado cambia de forma (de array a `{ items, total, limit, offset }`): si algo ya la consumía, es un cambio incompatible. En una API pública lo harías en una versión nueva (`/api/v2`).
+
+</ProjectStep>

@@ -29,7 +29,7 @@ export async function CodeBlock({ code, lang, meta, title, collapse, noLineNumbe
           .filter((line) => line.startsWith('$ '))
           .map((line) => line.slice(2))
           .join('\n')
-      : source;
+      : source.replace(/[ \t]*(?:\/\/|#|--)\s*\[!code [^\]]+\][ \t]*/g, ''); // sin las anotaciones de Shiki
 
   return (
     <CodeBlockFrame

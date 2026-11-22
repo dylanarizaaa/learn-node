@@ -1,0 +1,73 @@
+---
+title: Limitar peticiones
+description: Rate limiting contra fuerza bruta y abusos — ventana fija frente a token bucket, cabeceras RateLimit y Retry-After, y qué cambia con varias instancias.
+difficulty: intermedio
+time: 12
+prerequisites:
+  - seguridad/registro-y-login
+  - javascript/funciones-y-closures
+related:
+  - seguridad/seguridad-de-apis
+  - calidad/mocks
+resources:
+  - title: OWASP API Security — Unrestricted Resource Consumption
+    url: https://owasp.org/API-Security/editions/2023/en/0xa4-unrestricted-resource-consumption/
+  - title: express-rate-limit
+    url: https://express-rate-limit.mintlify.app/
+keywords: ["rate limit", "límite de peticiones", "429", "retry-after", "fuerza bruta", "ventana fija", "token bucket", "redis", "trust proxy", "req.ip"]
+milestone: 7
+---
+
+## La idea
+
+Sin límites, un atacante puede probar millones de contraseñas contra `/login` o saturar un endpoint caro. El <Term slug="rate-limiting">rate limiting</Term> cuenta las peticiones de cada cliente en una ventana de tiempo y, al superar el máximo, responde `429 Too Many Requests` con una cabecera `Retry-After` (segundos a esperar).
+
+## Algoritmos
+
+<Columns>
+  <Column title="Ventana fija">
+    «Máximo 10 por minuto»: un contador por cliente que se reinicia cada minuto. Simple y suficiente para frenar fuerza bruta. Permite ráfagas en el borde de la ventana (10 al final de un minuto y 10 al principio del siguiente).
+  </Column>
+  <Column title="Token bucket">
+    Un cubo con N fichas que se rellena a ritmo constante; cada petición gasta una. Suaviza las ráfagas. Es lo que usan muchas APIs públicas.
+  </Column>
+</Columns>
+
+## ¿Quién es «el cliente»?
+
+Normalmente, la IP (`req.ip`). Detrás de un proxy o balanceador, todas las peticiones llegan desde la IP del proxy; hay que decirle a Express que confíe en él para leer la IP real de `X-Forwarded-For`:
+
+```js
+app.set('trust proxy', 1); // confía en UN proxy delante (no pongas true a ciegas)
+```
+
+Para rutas autenticadas, limitar por usuario es más justo que por IP.
+
+## Errores comunes
+
+- Contadores en memoria con **varias instancias**: cada proceso cuenta por su cuenta y el límite real se multiplica. Usa un almacén compartido (Redis).
+- `trust proxy` en `true` sin proxy delante: cualquiera falsifica su IP con una cabecera.
+- Limitar solo `/login`: el registro y la recuperación de contraseña también son objetivos.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/middleware/rate-limit.js', 'src/app.js']}>
+
+Escribe un limitador de ventana fija, en memoria. La función `now` se puede inyectar: así un test controla el tiempo sin esperar un minuto real (lo verás en [Mocks](/docs/calidad/mocks)):
+
+<SourceFile path="src/middleware/rate-limit.js" />
+
+Aplícalo a registro y login (es el `limiter` que recibe `authRouter`):
+
+```js title="src/app.js"
+app.use('/api/auth', authRouter({ auth, requireAuth, limiter: rateLimit({ windowMs: 60_000, max: 10 }) }));
+```
+
+```console
+$ for i in $(seq 11); do curl -s -o /dev/null -w "%{http_code} " -X POST localhost:3000/api/auth/login -H 'content-type: application/json' -d '{"email":"a@b.co","password":"12345678"}'; done
+401 401 401 401 401 401 401 401 401 401 429
+```
+
+Fíjate en `setInterval(...).unref()`: limpia el `Map` periódicamente para que no crezca sin fin, sin impedir que el proceso termine. En el [reto](/docs/monedero/retos) correspondiente lo cambiarás por un almacén compartido para el modo cluster.
+
+</ProjectStep>

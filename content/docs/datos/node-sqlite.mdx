@@ -1,0 +1,133 @@
+---
+title: SQLite con node:sqlite
+description: La base de datos que viene con Node — abrir una conexión, sentencias preparadas, parámetros con nombre, run/get/all/iterate y PRAGMAs recomendados.
+difficulty: intermedio
+time: 18
+prerequisites:
+  - datos/sql-esencial
+related:
+  - datos/migraciones
+  - express/arquitectura-por-capas
+resources:
+  - title: Node.js — SQLite
+    url: https://nodejs.org/docs/latest/api/sqlite.html
+  - title: SQLite — Write-Ahead Logging
+    url: https://www.sqlite.org/wal.html
+keywords: ["sqlite", "node:sqlite", "databasesync", "prepare", "statementsync", "run", "get", "all", "iterate", "parámetros", "pragma", "wal", "foreign_keys", "síncrono"]
+milestone: 6
+---
+
+## La idea
+
+<Term slug="sqlite">SQLite</Term> es una base de datos SQL completa que vive en **un archivo**, sin servidor que instalar ni administrar. Node la incluye en `node:sqlite` (sin flags desde Node 22.13; en Node 22 muestra un aviso `ExperimentalWarning`; consulta su nivel de estabilidad en la documentación de tu versión).
+
+```js
+import { DatabaseSync } from 'node:sqlite';
+
+const db = new DatabaseSync('data/app.db');      // o ':memory:' para una base temporal
+db.exec('CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, text TEXT NOT NULL)');
+
+const insert = db.prepare('INSERT INTO notes (text) VALUES (:text) RETURNING id, text');
+const note = insert.get({ text: 'Comprar café' });   // { id: 1, text: 'Comprar café' }
+
+db.prepare('SELECT * FROM notes WHERE id = ?').get(1);   // una fila o undefined
+db.prepare('SELECT * FROM notes').all();                 // todas las filas
+db.prepare('DELETE FROM notes WHERE id = ?').run(1);     // { changes: 1, lastInsertRowid: … }
+```
+
+## Las piezas
+
+| Método | Devuelve | Úsalo para |
+| --- | --- | --- |
+| `db.exec(sql)` | nada | Varias sentencias sin parámetros (esquema, PRAGMAs) |
+| `db.prepare(sql)` | `StatementSync` | Cualquier consulta con parámetros |
+| `stmt.run(params)` | `{ changes, lastInsertRowid }` | `INSERT`, `UPDATE`, `DELETE` |
+| `stmt.get(params)` | la primera fila | Buscar uno |
+| `stmt.all(params)` | array de filas | Listados pequeños |
+| `stmt.iterate(params)` | iterador | Recorrer muchas filas sin cargarlas todas |
+
+Los parámetros pueden ser posicionales (`?`) o con nombre (`:text`, pasando un objeto). Prepara las sentencias **una vez** y reutilízalas.
+
+## Síncrono, y está bien
+
+`DatabaseSync` es **síncrono**: cada consulta bloquea el hilo mientras se ejecuta. Suena mal, pero SQLite es una biblioteca en el mismo proceso (no hay red) y las consultas con índice tardan microsegundos. Para una app de un servidor con cargas moderadas, funciona muy bien. Si una consulta pesada bloquea, muévela a un [worker thread](/docs/avanzado/worker-threads) o pasa a [PostgreSQL](/docs/datos/postgresql-y-orms).
+
+## PRAGMAs recomendados
+
+```sql
+PRAGMA journal_mode = WAL;   -- lectores y escritor a la vez
+PRAGMA foreign_keys = ON;    -- SQLite NO valida las claves foráneas si no lo activas
+PRAGMA busy_timeout = 5000;  -- espera si otro proceso está escribiendo
+```
+
+## Errores comunes
+
+- Comparar filas con `assert.deepStrictEqual`: las filas son objetos **sin prototipo** y la comparación falla. Cópialas con `{ ...row }`.
+- Pasar `undefined` como parámetro: lanza un error. Usa `null` o un valor por defecto.
+- Pasar un objeto con claves que no están en la consulta: `Unknown named parameter`. Construye solo los parámetros que usas.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/db/database.js', 'src/expenses/expenses.repository.js', 'src/server.js', 'src/expenses/expenses.service.js']}>
+
+Crea el módulo de conexión con los PRAGMAs recomendados (la función `transaction` del final la explicamos en [Transacciones](/docs/datos/transacciones)):
+
+<SourceFile path="src/db/database.js" />
+
+Escribe el repositorio SQLite con **las mismas operaciones** que el almacenamiento JSON. Es la versión del hito 6 (sin usuarios); `list` y los totales llegan en [Consultas y paginación](/docs/datos/consultas-y-paginacion):
+
+```js title="src/expenses/expenses.repository.js"
+// Columnas que devolvemos, con nombres en camelCase para JavaScript.
+const COLUMNS = 'id, amount, category, description, date, created_at AS createdAt';
+const EDITABLE = ['amount', 'category', 'description', 'date'];
+
+/** node:sqlite devuelve objetos sin prototipo; los convertimos en objetos normales. */
+const toExpense = (row) => (row ? { ...row } : undefined);
+
+export function createExpensesRepository(db) {
+  const insert = db.prepare(`
+    INSERT INTO expenses (amount, category, description, date)
+    VALUES (:amount, :category, :description, :date)
+    RETURNING ${COLUMNS}`);
+  const findById = db.prepare(`SELECT ${COLUMNS} FROM expenses WHERE id = :id`);
+  const remove = db.prepare('DELETE FROM expenses WHERE id = :id');
+
+  return {
+    create({ amount, category, description = '', date }) {
+      return toExpense(insert.get({ amount, category, description, date }));
+    },
+    findById(id) {
+      return toExpense(findById.get({ id }));
+    },
+    update(id, changes) {
+      const keys = EDITABLE.filter((key) => changes[key] !== undefined);
+      const params = Object.fromEntries(keys.map((key) => [key, changes[key]]));
+      const row = db
+        .prepare(`UPDATE expenses SET ${keys.map((key) => `${key} = :${key}`).join(', ')} WHERE id = :id RETURNING ${COLUMNS}`)
+        .get({ ...params, id });
+      return toExpense(row);
+    },
+    remove(id) {
+      return remove.run({ id }).changes > 0;
+    },
+  };
+}
+```
+
+En `update`, los nombres de columna salen de la lista fija `EDITABLE`, nunca del cliente; los valores van como parámetros.
+
+Cambia el repositorio en el punto de entrada. **Ni las rutas ni el dominio cambian**: esa es la recompensa de la arquitectura por capas.
+
+```js title="src/server.js"
+import { createJsonStore } from './storage/json-store.js'; // [!code --]
+import { openDatabase } from './db/database.js'; // [!code ++]
+import { createExpensesRepository } from './expenses/expenses.repository.js'; // [!code ++]
+
+const repository = createJsonStore(process.env.DATA_FILE ?? join(import.meta.dirname, '..', 'data', 'gastos.json')); // [!code --]
+const db = openDatabase(process.env.DATABASE_PATH ?? 'data/monedero.db'); // [!code ++]
+const repository = createExpensesRepository(db); // [!code ++]
+```
+
+Como el repositorio ahora es síncrono, el servicio puede dejar de usar `async/await` (`repository.create(...)` devuelve el gasto directamente). Express 5 acepta handlers síncronos y asíncronos, así que las rutas funcionan en ambos casos. Renombra `repository.add` por `repository.create` en el servicio.
+
+</ProjectStep>

@@ -1,0 +1,121 @@
+---
+title: Transacciones
+description: Todo o nada — BEGIN, COMMIT y ROLLBACK, un ayudante para usarlas sin olvidar el rollback, y qué cuidar con código asíncrono.
+difficulty: intermedio
+time: 15
+prerequisites:
+  - datos/consultas-y-paginacion
+  - nucleo/streams
+related:
+  - datos/migraciones
+  - avanzado/streams-avanzados
+resources:
+  - title: SQLite — Transacciones
+    url: https://www.sqlite.org/lang_transaction.html
+keywords: ["transacción", "transaction", "begin", "commit", "rollback", "atomicidad", "acid", "todo o nada", "importación", "lote"]
+milestone: 6
+---
+
+## La idea
+
+Una <Term slug="transaccion">transacción</Term> agrupa varias operaciones para que se apliquen **todas o ninguna**. El ejemplo clásico es una transferencia: restar de una cuenta y sumar a otra. Si el proceso muere entre las dos, el dinero desaparece… salvo que ambas operaciones estén en una transacción.
+
+```sql
+BEGIN;
+UPDATE accounts SET balance = balance - 5000 WHERE id = 1;
+UPDATE accounts SET balance = balance + 5000 WHERE id = 2;
+COMMIT;      -- confirma ambas
+-- o ROLLBACK; para deshacer ambas
+```
+
+Hasta el `COMMIT`, nadie más ve los cambios. Si algo falla, `ROLLBACK` deja la base de datos exactamente como estaba.
+
+## Un ayudante que no se olvida del ROLLBACK
+
+```js
+function transaction(db, fn) {
+  db.exec('BEGIN');
+  try {
+    const result = fn();
+    db.exec('COMMIT');
+    return result;
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+```
+
+Bonus de rendimiento: en SQLite, insertar 10 000 filas dentro de una transacción es **cientos de veces más rápido** que hacerlo fuera, porque el disco se sincroniza una vez en lugar de 10 000.
+
+## Cuidado con await dentro de una transacción
+
+Con una conexión compartida, si dentro de la transacción haces `await` (esperar una red, un archivo…), el event loop puede atender **otra petición** que use la misma conexión… y sus consultas entrarán en tu transacción. Reglas:
+
+- Con `node:sqlite` (síncrono), mantén la función de la transacción **síncrona**: prepara todos los datos antes y abre la transacción solo para escribir.
+- Con PostgreSQL, cada transacción usa **su propia conexión** del pool.
+
+## Errores comunes
+
+- Hacer `BEGIN` y olvidar el `ROLLBACK` en un camino de error: la conexión queda dentro de una transacción abierta y todo lo posterior se mezcla.
+- Transacciones largas (por ejemplo, leer un archivo de 1 GB con la transacción abierta): bloquean a los demás escritores.
+- Validar después de escribir: valida antes; la transacción es la red de seguridad, no el filtro.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/db/database.js', 'src/expenses/expenses.repository.js', 'src/expenses/expenses.routes.js']}>
+
+El ayudante ya está en `database.js` desde la lección de [node:sqlite](/docs/datos/node-sqlite):
+
+<SourceFile path="src/db/database.js" lines="22-40" />
+
+Úsalo en el repositorio para insertar muchos gastos de una vez:
+
+```js title="src/expenses/expenses.repository.js"
+import { transaction } from '../db/database.js';
+
+/** Inserta muchos gastos en una sola transacción: o entran todos o ninguno. */
+createMany(expenses) {
+  return transaction(db, () =>
+    expenses.map(({ amount, category, description = '', date }) =>
+      toExpense(insert.get({ amount, category, description, date })),
+    ),
+  );
+},
+```
+
+Con esto, la importación CSV del hito 3 llega a la API. La petición (`req`) **es un stream**, así que se pasa directamente a `readExpensesCsv`: se valida todo leyendo por trozos y solo al final, con todas las filas ya validadas, se abre la transacción. Versión del hito 6 (en el hito 7 recibirá el usuario):
+
+```js title="src/expenses/expenses.routes.js"
+router.post('/import', async (req, res) => {
+  if (!req.is('text/csv')) {
+    throw new AppError('Envía el archivo con la cabecera Content-Type: text/csv', {
+      status: 415,
+      code: 'UNSUPPORTED_MEDIA_TYPE',
+    });
+  }
+  const { valid, errors } = await readExpensesCsv(req);
+  if (errors.length > 0) {
+    throw new ValidationError(errors.slice(0, 20), `Hay ${errors.length} filas con errores; no se importó nada`);
+  }
+  const created = expenses.importMany(valid);
+  res.status(201).json({ imported: created.length });
+});
+```
+
+```js title="src/expenses/expenses.service.js"
+importMany(expenses) {
+  const created = repository.createMany(expenses.map((e) => ({ ...e, date: e.date ?? today() })));
+  events.emit('expense.imported', { count: created.length });
+  return created;
+},
+```
+
+```console
+$ curl -X POST localhost:3000/api/expenses/import -H 'content-type: text/csv' --data-binary @gastos.csv
+{"imported":2}
+```
+
+Declara `/import` antes de `/:id` (es `POST`, así que no choca con `GET /:id`, pero mantener las rutas fijas arriba es una buena costumbre).
+
+</ProjectStep>
