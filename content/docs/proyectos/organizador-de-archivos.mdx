@@ -1,0 +1,241 @@
+---
+title: Organizador de archivos
+description: Ordena una carpeta (como Descargas) en subcarpetas por tipo de archivo, con modo simulación, sin pisar archivos existentes y con tests sobre carpetas temporales.
+difficulty: principiante
+time: 60
+prerequisites:
+  - nucleo/sistema-de-archivos
+  - nucleo/path-y-url
+related:
+  - proyectos/cli-de-notas
+  - calidad/test-runner
+resources:
+  - title: Node.js — fs.readdir con withFileTypes
+    url: https://nodejs.org/docs/latest/api/fs.html#fspromisesreaddirpath-options
+  - title: Node.js — fs.mkdtemp
+    url: https://nodejs.org/docs/latest/api/fs.html#fspromisesmkdtempprefix-options
+goal: Manipular el sistema de archivos con seguridad — leer carpetas, crear directorios, mover archivos sin perder datos — y probarlo con carpetas temporales reales.
+technologies: ["Node.js 26", "fs/promises", "node:path", "util.parseArgs", "node:test", "os.tmpdir"]
+features:
+  - Clasificación por extensión configurable (imágenes, documentos, audio…)
+  - Modo simulación por defecto; --apply para mover de verdad
+  - 'Nunca sobrescribe: renombra a "foto (1).jpg" si ya existe'
+  - Ignora carpetas y archivos ocultos
+  - Tests sobre una carpeta temporal que se borra al terminar
+---
+
+## Descripción del proyecto
+
+La carpeta de descargas de todo el mundo acaba igual: cientos de archivos mezclados. Este script los reparte en subcarpetas según su extensión. Parece trivial, pero obliga a pensar en lo que hace que una herramienta que toca archivos sea **segura**: simular antes de actuar, no sobrescribir nunca y probar sin arriesgar tus archivos reales.
+
+```console
+$ node src/cli.js ~/Descargas
+cancion.mp3 → audio/cancion.mp3
+factura.pdf → documentos/factura.pdf
+gastos.csv → hojas/gastos.csv
+script.sh → otros/script.sh
+vacaciones.jpg → imagenes/vacaciones.jpg
+
+5 archivos se moverían.
+Es una simulación: añade --apply para moverlos de verdad.
+```
+
+## Arquitectura propuesta
+
+<Layers
+  layers={[
+    { title: 'CLI', desc: 'src/cli.js', items: ['--apply', 'rutas relativas en la salida'], tone: 'brand' },
+    { title: 'Organizador', desc: 'src/organize.js', items: ['readdir', 'mkdir', 'rename', 'nombre libre'] },
+    { title: 'Reglas', desc: 'src/rules.js', items: ['extensión → carpeta'], tone: 'muted' },
+  ]}
+/>
+
+## Estructura de carpetas
+
+```tree
+organizador/
+  package.json
+  src/
+    cli.js
+    organize.js * # lee, planifica y mueve
+    organize.test.js
+    rules.js # tabla de extensiones
+```
+
+## Implementación paso a paso
+
+<Steps>
+<Step title="Las reglas">
+
+Una tabla legible de carpeta → extensiones, que se invierte una vez a un `Map` de extensión → carpeta para buscar en tiempo constante. `lastIndexOf('.') > 0` evita tratar `.bashrc` como extensión.
+
+```js title="src/rules.js"
+// A qué carpeta va cada extensión. Lo que no aparezca va a "otros".
+export const RULES = {
+  imagenes: ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.heic'],
+  documentos: ['.pdf', '.doc', '.docx', '.txt', '.md', '.odt'],
+  hojas: ['.xls', '.xlsx', '.csv', '.ods'],
+  audio: ['.mp3', '.wav', '.flac', '.m4a'],
+  video: ['.mp4', '.mov', '.mkv', '.webm'],
+  comprimidos: ['.zip', '.rar', '.7z', '.tar', '.gz'],
+};
+
+const BY_EXTENSION = new Map(
+  Object.entries(RULES).flatMap(([folder, extensions]) => extensions.map((ext) => [ext, folder])),
+);
+
+/** Carpeta de destino para un nombre de archivo. */
+export function folderFor(filename) {
+  const dot = filename.lastIndexOf('.');
+  const ext = dot > 0 ? filename.slice(dot).toLowerCase() : '';
+  return BY_EXTENSION.get(ext) ?? 'otros';
+}
+```
+
+</Step>
+<Step title="Leer, planificar y mover">
+
+`readdir` con `withFileTypes` devuelve objetos con `isFile()` sin una llamada extra a `stat` por archivo. `freePath` busca un nombre libre para no sobrescribir nunca. En modo simulación no se crea ni se mueve nada.
+
+```js title="src/organize.js"
+import { mkdir, readdir, rename, stat } from 'node:fs/promises';
+import { basename, extname, join } from 'node:path';
+import { folderFor } from './rules.js';
+
+/** Devuelve una ruta libre: foto.jpg → foto (1).jpg → foto (2).jpg… */
+async function freePath(dir, filename) {
+  const ext = extname(filename);
+  const name = basename(filename, ext);
+  for (let i = 0; ; i++) {
+    const candidate = join(dir, i === 0 ? filename : `${name} (${i})${ext}`);
+    const exists = await stat(candidate).then(() => true, () => false);
+    if (!exists) return candidate;
+  }
+}
+
+/**
+ * Planifica y (si dryRun es false) mueve los archivos de `dir` a subcarpetas.
+ * Devuelve la lista de movimientos [{ from, to }].
+ */
+export async function organize(dir, { dryRun = true } = {}) {
+  const entries = await readdir(dir, { withFileTypes: true });
+  const moves = [];
+  for (const entry of entries) {
+    // Solo archivos visibles; nada de carpetas, enlaces ni archivos ocultos.
+    if (!entry.isFile() || entry.name.startsWith('.')) continue;
+    const folder = folderFor(entry.name);
+    const targetDir = join(dir, folder);
+    const from = join(dir, entry.name);
+    if (dryRun) {
+      moves.push({ from, to: join(targetDir, entry.name) });
+      continue;
+    }
+    await mkdir(targetDir, { recursive: true });
+    const to = await freePath(targetDir, entry.name);
+    await rename(from, to);
+    moves.push({ from, to });
+  }
+  return moves;
+}
+```
+
+</Step>
+<Step title="La CLI">
+
+`resolve` convierte la ruta recibida en absoluta; `relative` acorta la salida para que sea legible.
+
+```js title="src/cli.js"
+#!/usr/bin/env node
+import { relative, resolve } from 'node:path';
+import { parseArgs, styleText } from 'node:util';
+import { organize } from './organize.js';
+
+try {
+  const { values, positionals } = parseArgs({
+    allowPositionals: true,
+    options: { apply: { type: 'boolean', default: false } },
+  });
+  const dir = resolve(positionals[0] ?? '.');
+  const moves = await organize(dir, { dryRun: !values.apply });
+
+  for (const { from, to } of moves) {
+    console.log(`${relative(dir, from)} ${styleText('dim', '→')} ${relative(dir, to)}`);
+  }
+  const verb = values.apply ? 'movidos' : 'se moverían';
+  console.log(styleText('green', `\n${moves.length} archivos ${verb}.`));
+  if (!values.apply && moves.length > 0) {
+    console.log(styleText('yellow', 'Es una simulación: añade --apply para moverlos de verdad.'));
+  }
+} catch (error) {
+  console.error(styleText('red', `✖ ${error.message}`));
+  process.exitCode = 1;
+}
+```
+
+</Step>
+<Step title="Tests con una carpeta temporal">
+
+`mkdtemp` crea una carpeta única en el directorio temporal del sistema; `after` la borra al terminar. Así los tests usan el sistema de archivos real sin riesgo.
+
+```js title="src/organize.test.js"
+import assert from 'node:assert/strict';
+import { mkdtemp, readdir, rm, writeFile, mkdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { after, before, test } from 'node:test';
+import { organize } from './organize.js';
+import { folderFor } from './rules.js';
+
+let dir;
+before(async () => {
+  dir = await mkdtemp(join(tmpdir(), 'organizador-')); // carpeta temporal única
+  for (const name of ['foto.JPG', 'informe.pdf', 'datos.csv', 'sin-extension', '.oculto']) {
+    await writeFile(join(dir, name), 'x');
+  }
+  await mkdir(join(dir, 'imagenes'));
+  await writeFile(join(dir, 'imagenes', 'foto.JPG'), 'ya existía');
+});
+after(() => rm(dir, { recursive: true, force: true }));
+
+test('clasifica por extensión sin distinguir mayúsculas', () => {
+  assert.equal(folderFor('foto.JPG'), 'imagenes');
+  assert.equal(folderFor('Makefile'), 'otros');
+  assert.equal(folderFor('.bashrc'), 'otros');
+});
+
+test('la simulación no mueve nada', async () => {
+  const moves = await organize(dir, { dryRun: true });
+  assert.equal(moves.length, 4);
+  assert.ok((await readdir(dir)).includes('informe.pdf'));
+});
+
+test('mueve los archivos y no pisa los existentes', async () => {
+  await organize(dir, { dryRun: false });
+  assert.deepEqual((await readdir(join(dir, 'imagenes'))).sort(), ['foto (1).JPG', 'foto.JPG']);
+  assert.deepEqual(await readdir(join(dir, 'documentos')), ['informe.pdf']);
+  assert.ok((await readdir(dir)).includes('.oculto'));
+});
+```
+
+```console
+$ node --test
+✔ clasifica por extensión sin distinguir mayúsculas
+✔ la simulación no mueve nada
+✔ mueve los archivos y no pisa los existentes
+ℹ pass 3
+```
+
+</Step>
+</Steps>
+
+## Propuestas de mejora
+
+<Checklist
+  items={[
+    'Reglas configurables desde un archivo organizador.json en la carpeta.',
+    'Organizar por fecha de modificación (2026/11/) usando stat().mtime.',
+    'Modo --watch con fs.watch para ordenar los archivos nuevos al llegar.',
+    'Deshacer: guardar los movimientos en un registro y revertirlos.',
+    'Detectar duplicados por contenido calculando un hash con node:crypto y streams.',
+  ]}
+/>

@@ -1,0 +1,303 @@
+---
+title: Acortador de URLs
+description: Un servicio tipo bit.ly con Express, SQLite y Zod — slugs aleatorios o personalizados, redirecciones, contador de clics atómico y tests por HTTP.
+difficulty: intermedio
+time: 90
+prerequisites:
+  - express/validacion-con-zod
+  - datos/node-sqlite
+related:
+  - calidad/tests-de-integracion
+  - seguridad/seguridad-de-apis
+resources:
+  - title: MDN — 302 Found
+    url: https://developer.mozilla.org/es/docs/Web/HTTP/Reference/Status/302
+  - title: Node.js — crypto.randomInt
+    url: https://nodejs.org/docs/latest/api/crypto.html#cryptorandomintmin-max-callback
+  - title: OWASP — Unvalidated Redirects and Forwards
+    url: https://cheatsheetseries.owasp.org/cheatsheets/Unvalidated_Redirects_and_Forwards_Cheat_Sheet.html
+goal: Construir una API completa y pequeña de principio a fin — validación estricta, restricciones de base de datos, operaciones atómicas, redirecciones HTTP y tests de integración.
+technologies: ["Express 5", "node:sqlite", "Zod 4", "crypto.randomInt", "node:test", "fetch"]
+features:
+  - Crear enlaces cortos con slug aleatorio o personalizado
+  - Redirección 302 al visitar el enlace corto
+  - Contador de clics sin condiciones de carrera
+  - Estadísticas por enlace
+  - Solo URLs http(s) y slugs reservados protegidos
+  - Tests de integración con un puerto aleatorio
+---
+
+## Descripción del proyecto
+
+Envías una URL larga y recibes una corta. Al visitarla, el servidor redirige a la original y cuenta el clic. Es un proyecto pequeño en el que caben casi todas las lecciones de los hitos 5 y 6, y dos detalles de seguridad que conviene interiorizar:
+
+- **Una redirección es un enlace que el servidor firma con su dominio.** Si aceptas cualquier URL, `z.url()` dejaría pasar `javascript:alert(1)`. Restringe el protocolo.
+- **Contar clics con «leer, sumar, escribir» pierde clics** cuando llegan dos a la vez. Hazlo en una sola sentencia SQL.
+
+```console
+$ curl -X POST localhost:3000/api/links -H 'content-type: application/json' -d '{"url":"https://nodejs.org/es","slug":"node"}'
+{"slug":"node","url":"https://nodejs.org/es","clicks":0,"createdAt":"2026-11-22T13:01:22.511Z","shortUrl":"http://localhost:3000/node"}
+$ curl -i localhost:3000/node
+HTTP/1.1 302 Found
+Location: https://nodejs.org/es
+```
+
+## Arquitectura propuesta
+
+<Layers
+  layers={[
+    { title: 'HTTP', desc: 'src/app.js', items: ['POST /api/links', 'GET /api/links/:slug', 'GET /:slug → 302'], tone: 'brand' },
+    { title: 'Validación', desc: 'Zod', items: ['solo http(s)', 'slug 3–32', 'reservados'] },
+    { title: 'Datos', desc: 'SQLite', items: ['PRIMARY KEY (slug)', 'clicks = clicks + 1'], tone: 'muted' },
+  ]}
+/>
+
+## Estructura de carpetas
+
+```tree
+acortador/
+  package.json
+  src/
+    app.js * # rutas y validación
+    db.js # conexión y tabla
+    server.js # punto de entrada
+    slug.js # slugs aleatorios
+  test/
+    app.test.js
+```
+
+## Implementación paso a paso
+
+<Steps>
+<Step title="Prepara el proyecto">
+
+```bash
+mkdir acortador && cd acortador
+npm init -y
+npm pkg set type=module scripts.start="node src/server.js" scripts.test="node --test"
+npm install express zod
+```
+
+</Step>
+<Step title="La tabla">
+
+El slug es la clave primaria: la base de datos garantiza que no haya dos iguales. Para un proyecto de una sola tabla, `CREATE TABLE IF NOT EXISTS` basta; si crece, pasa a [migraciones](/docs/datos/migraciones).
+
+```js title="src/db.js"
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+
+export function openDatabase(path) {
+  if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
+  const db = new DatabaseSync(path);
+  db.exec(`
+    PRAGMA journal_mode = WAL;
+    CREATE TABLE IF NOT EXISTS links (
+      slug       TEXT PRIMARY KEY,
+      url        TEXT NOT NULL,
+      clicks     INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+  `);
+  return db;
+}
+```
+
+</Step>
+<Step title="Slugs aleatorios">
+
+`Math.random()` no es apto cuando el valor no debe ser predecible. `crypto.randomInt` es criptográficamente seguro y uniforme.
+
+```js title="src/slug.js"
+import { randomInt } from 'node:crypto';
+
+const ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+/** Slug aleatorio de base 62. Con 7 caracteres hay 62^7 ≈ 3,5 billones de combinaciones. */
+export function randomSlug(length = 7) {
+  let slug = '';
+  for (let i = 0; i < length; i++) slug += ALPHABET[randomInt(ALPHABET.length)]; // randomInt: uniforme y criptográfico
+  return slug;
+}
+```
+
+</Step>
+<Step title="La aplicación">
+
+Tres decisiones clave: el schema restringe el protocolo; si el slug aleatorio choca con uno existente (código 1555 de SQLite), se reintenta; y el clic se cuenta con `UPDATE … RETURNING`, que incrementa y devuelve la URL en una sola operación atómica.
+
+```js title="src/app.js"
+import express from 'express';
+import { z } from 'zod';
+import { randomSlug } from './slug.js';
+
+z.config(z.locales.es());
+
+const RESERVED = new Set(['api', 'admin', 'health']);
+const SQLITE_CONSTRAINT_PRIMARYKEY = 1555;
+
+const createSchema = z.object({
+  // Solo http(s): z.url() a secas acepta "javascript:alert(1)", y redirigir ahí sería un XSS.
+  url: z.url({ protocol: /^https?$/ }).max(2048),
+  slug: z
+    .string()
+    .regex(/^[\w-]{3,32}$/, 'Usa de 3 a 32 letras, números, guiones o guiones bajos')
+    .refine((slug) => !RESERVED.has(slug.toLowerCase()), 'Ese nombre está reservado')
+    .optional(),
+});
+
+class HttpError extends Error {
+  constructor(status, message, details) {
+    super(message);
+    this.status = status;
+    this.details = details;
+  }
+}
+
+export function createApp({ db, baseUrl }) {
+  const insert = db.prepare('INSERT INTO links (slug, url) VALUES (:slug, :url) RETURNING slug, url, clicks, created_at AS createdAt');
+  const hit = db.prepare('UPDATE links SET clicks = clicks + 1 WHERE slug = ? RETURNING url');
+  const stats = db.prepare('SELECT slug, url, clicks, created_at AS createdAt FROM links WHERE slug = ?');
+  const withShortUrl = (link) => ({ ...link, shortUrl: `${baseUrl}/${link.slug}` });
+
+  function create(url, slug) {
+    try {
+      return insert.get({ slug, url });
+    } catch (error) {
+      if (error.errcode === SQLITE_CONSTRAINT_PRIMARYKEY) return null; // el slug ya existe
+      throw error;
+    }
+  }
+
+  const app = express();
+  app.use(express.json({ limit: '10kb' }));
+
+  app.post('/api/links', (req, res) => {
+    const result = createSchema.safeParse(req.body);
+    if (!result.success) {
+      throw new HttpError(400, 'Datos no válidos', result.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })));
+    }
+    const { url, slug } = result.data;
+
+    let link = null;
+    if (slug) {
+      link = create(url, slug);
+      if (!link) throw new HttpError(409, `El slug "${slug}" ya está en uso`);
+    } else {
+      // Una colisión aleatoria es improbable, pero no imposible: se reintenta.
+      for (let attempt = 0; attempt < 5 && !link; attempt++) link = create(url, randomSlug());
+      if (!link) throw new HttpError(500, 'No se pudo generar un slug libre');
+    }
+    res.status(201).json(withShortUrl({ ...link }));
+  });
+
+  app.get('/api/links/:slug', (req, res) => {
+    const link = stats.get(req.params.slug);
+    if (!link) throw new HttpError(404, 'No existe ese enlace');
+    res.json(withShortUrl({ ...link }));
+  });
+
+  // La redirección va al final: así /api/... nunca se interpreta como un slug.
+  app.get('/:slug', (req, res) => {
+    // Contar y leer en una sola sentencia: sin condiciones de carrera entre dos clics.
+    const link = hit.get(req.params.slug);
+    if (!link) throw new HttpError(404, 'No existe ese enlace');
+    res.redirect(302, link.url);
+  });
+
+  app.use((error, req, res, next) => {
+    if (error.type === 'entity.parse.failed') error = new HttpError(400, 'JSON no válido');
+    const status = error.status ?? 500;
+    if (status === 500) console.error(error);
+    res.status(status).json({ error: status === 500 ? 'Error interno' : error.message, details: error.details });
+  });
+
+  return app;
+}
+```
+
+```js title="src/server.js"
+import { createApp } from './app.js';
+import { openDatabase } from './db.js';
+
+const PORT = Number(process.env.PORT ?? 3000);
+const BASE_URL = process.env.BASE_URL ?? `http://localhost:${PORT}`;
+
+const db = openDatabase(process.env.DATABASE_PATH ?? 'data/links.db');
+createApp({ db, baseUrl: BASE_URL }).listen(PORT, () => console.log(`Acortador en ${BASE_URL}`));
+```
+
+</Step>
+<Step title="Tests de integración">
+
+`redirect: 'manual'` impide que `fetch` siga la redirección, para poder comprobar el `302` y la cabecera `Location`.
+
+```js title="test/app.test.js"
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import { after, before, test } from 'node:test';
+import { createApp } from '../src/app.js';
+import { openDatabase } from '../src/db.js';
+
+let server;
+let base;
+before(async () => {
+  server = createApp({ db: openDatabase(':memory:'), baseUrl: 'https://acor.ta' }).listen(0);
+  await once(server, 'listening');
+  base = `http://localhost:${server.address().port}`;
+});
+after(() => server.close());
+
+const post = (body) =>
+  fetch(`${base}/api/links`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+
+test('crea un enlace con slug aleatorio y redirige', async () => {
+  const res = await post({ url: 'https://nodejs.org/es' });
+  assert.equal(res.status, 201);
+  const link = await res.json();
+  assert.match(link.slug, /^[0-9a-zA-Z]{7}$/);
+  assert.equal(link.shortUrl, `https://acor.ta/${link.slug}`);
+
+  const redirect = await fetch(`${base}/${link.slug}`, { redirect: 'manual' });
+  assert.equal(redirect.status, 302);
+  assert.equal(redirect.headers.get('location'), 'https://nodejs.org/es');
+});
+
+test('cuenta los clics', async () => {
+  await post({ url: 'https://example.com', slug: 'ejemplo' });
+  for (let i = 0; i < 3; i++) await fetch(`${base}/ejemplo`, { redirect: 'manual' });
+  const stats = await (await fetch(`${base}/api/links/ejemplo`)).json();
+  assert.equal(stats.clicks, 3);
+});
+
+test('rechaza slugs repetidos, reservados y URLs peligrosas', async () => {
+  assert.equal((await post({ url: 'https://a.com', slug: 'ejemplo' })).status, 409);
+  assert.equal((await post({ url: 'https://a.com', slug: 'api' })).status, 400);
+  assert.equal((await post({ url: 'javascript:alert(1)' })).status, 400);
+  assert.equal((await fetch(`${base}/no-existe`, { redirect: 'manual' })).status, 404);
+});
+```
+
+```console
+$ npm test
+✔ crea un enlace con slug aleatorio y redirige
+✔ cuenta los clics
+✔ rechaza slugs repetidos, reservados y URLs peligrosas
+ℹ pass 3
+```
+
+</Step>
+</Steps>
+
+## Propuestas de mejora
+
+<Checklist
+  items={[
+    'Usuarios propietarios de sus enlaces (reutiliza la autenticación de Monedero).',
+    'Límite de peticiones para la creación de enlaces.',
+    'Caducidad opcional (expires_at) y respuesta 410 Gone.',
+    'Estadísticas por día en una tabla clicks con la fecha de cada visita.',
+    'Código QR del enlace corto generado en un worker thread.',
+  ]}
+/>

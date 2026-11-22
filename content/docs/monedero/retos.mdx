@@ -1,0 +1,61 @@
+---
+title: Retos para ampliar Monedero
+sidebarTitle: Retos
+description: Ejercicios para seguir practicando sobre el proyecto terminado, ordenados por dificultad, con pistas y las lecciones que conviene repasar.
+difficulty: avanzado
+time: 30
+related:
+  - monedero/hoja-de-ruta
+  - monedero/puesta-en-marcha
+keywords: ["retos", "ejercicios", "práctica", "ampliar", "monedero", "ideas"]
+---
+
+## Cómo afrontarlos
+
+Cada reto toca varias capas. Antes de escribir código, decide **en qué capa va cada pieza** (dominio, repositorio, servicio, rutas) y escribe primero el test que demuestra que funciona.
+
+## Para empezar
+
+<Checklist
+  items={[
+    'Presupuesto mensual por categoría: tabla budgets, endpoint para fijarlo y aviso en el resumen si se supera.',
+    'Filtro por texto en el listado (?q=taxi) buscando en la descripción con LIKE y un parámetro.',
+    'Test del error 500 genérico: un repositorio falso que lanza y la comprobación de que no se filtran detalles.',
+    'Comando "delete <id>" en la CLI con confirmación por readline (node:readline/promises).',
+  ]}
+/>
+
+Repasa: [arrays y objetos](/docs/javascript/arrays-y-objetos), [consultas y paginación](/docs/datos/consultas-y-paginacion), [mocks](/docs/calidad/mocks), [process y argumentos](/docs/nucleo/process-y-argumentos).
+
+## Intermedios
+
+<Checklist
+  items={[
+    'Gastos recurrentes (alquiler, suscripciones): una tabla de reglas y un proceso que los crea cada mes.',
+    'Varias monedas por gasto con un campo currency y totales separados por moneda.',
+    'Paginación por cursor en GET /api/expenses en lugar de offset.',
+    'Cambio de contraseña y cierre de sesión con una lista de tokens revocados (o tokens de corta duración + refresh).',
+    'Verificación de email al registrarse con un token de un solo uso que caduca.',
+  ]}
+/>
+
+Repasa: [transacciones](/docs/datos/transacciones), [JWT](/docs/seguridad/jwt), [registro e inicio de sesión](/docs/seguridad/registro-y-login), [migraciones](/docs/datos/migraciones).
+
+## Avanzados
+
+<Checklist
+  items={[
+    'Límite de peticiones y bus de eventos compartidos con Redis, para que funcionen en modo cluster.',
+    'Métricas en /metrics: contador de peticiones por ruta y código, e histograma de latencias.',
+    'Pool de workers (piscina) para los informes, con un máximo de tareas en cola.',
+    'Migrar el repositorio a PostgreSQL con pg, manteniendo los mismos tests de integración.',
+    'Un cliente web en public/ que muestre el resumen y se actualice en vivo con EventSource.',
+    'Copias de seguridad programadas con VACUUM INTO y un comando para restaurarlas.',
+  ]}
+/>
+
+Repasa: [cluster](/docs/avanzado/cluster), [observabilidad](/docs/produccion/observabilidad), [worker threads](/docs/avanzado/worker-threads), [PostgreSQL y ORMs](/docs/datos/postgresql-y-orms), [tiempo real](/docs/avanzado/tiempo-real).
+
+## Comparte tu versión
+
+Si resuelves alguno, compara tu solución con la estructura del proyecto final: ¿respetaste las capas? ¿Tus tests fallarían si rompieras la funcionalidad? Esas dos preguntas valen más que cualquier solución de referencia.

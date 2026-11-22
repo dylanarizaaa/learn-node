@@ -1,0 +1,79 @@
+---
+title: Referencia de la API
+description: Todos los endpoints de Monedero con sus parámetros, respuestas y códigos de error, y el formato común de los errores.
+difficulty: intermedio
+time: 10
+related:
+  - monedero/puesta-en-marcha
+  - http/protocolo-http
+keywords: ["api", "endpoints", "referencia", "rest", "errores", "códigos", "monedero"]
+---
+
+## Convenciones
+
+- Base: `http://localhost:3000/api`. Cuerpos y respuestas en JSON (salvo CSV y eventos).
+- Las rutas con candado exigen `Authorization: Bearer <token>`.
+- Los importes se envían como texto o número (`"12,50"`, `12.5`) y se devuelven en **céntimos** (`1250`).
+- Las fechas son `AAAA-MM-DD`; los meses, `AAAA-MM`.
+
+## Salud
+
+<Endpoints>
+  <Endpoint method="GET" path="/api/health">Estado del proceso: `status`, `version`, `uptime`, `memoryMb` y `eventLoopDelayMs`.</Endpoint>
+  <Endpoint method="GET" path="/api/ready">`200` si la base de datos responde; `503` si no.</Endpoint>
+</Endpoints>
+
+## Autenticación
+
+<Endpoints>
+  <Endpoint method="POST" path="/api/auth/register">Cuerpo `{ email, password }` (contraseña de 8 a 128 caracteres). `201` con `{ user, token }`; `409` si el email ya existe. Máximo 10 por minuto por IP.</Endpoint>
+  <Endpoint method="POST" path="/api/auth/login">Cuerpo `{ email, password }`. `200` con `{ user, token }`; `401` si no coinciden. Máximo 10 por minuto por IP.</Endpoint>
+  <Endpoint method="GET" path="/api/auth/me" auth>El usuario del token.</Endpoint>
+</Endpoints>
+
+## Gastos
+
+<Endpoints>
+  <Endpoint method="GET" path="/api/expenses" auth>Query opcional: `month`, `category`, `limit` (1–100, por defecto 20) y `offset`. Devuelve `{ items, total, limit, offset }`, de más reciente a más antiguo.</Endpoint>
+  <Endpoint method="POST" path="/api/expenses" auth>Cuerpo `{ amount, category, description?, date? }`. Sin fecha, se usa la de hoy. `201` con el gasto.</Endpoint>
+  <Endpoint method="GET" path="/api/expenses/:id" auth>Un gasto. `404` si no existe o es de otra persona.</Endpoint>
+  <Endpoint method="PATCH" path="/api/expenses/:id" auth>Cualquier subconjunto de `{ amount, category, description, date }` (al menos uno).</Endpoint>
+  <Endpoint method="DELETE" path="/api/expenses/:id" auth>`204` sin cuerpo.</Endpoint>
+  <Endpoint method="GET" path="/api/expenses/summary" auth>Query opcional `month` (por defecto, el actual). Devuelve `{ month, count, total, byCategory }`.</Endpoint>
+  <Endpoint method="POST" path="/api/expenses/import" auth>CSV con `Content-Type: text/csv` y columnas `fecha,importe,categoria,descripcion`. Todo o nada: `201` con `{ imported }`, o `400` con los errores por línea.</Endpoint>
+  <Endpoint method="GET" path="/api/expenses/export.csv" auth>Query opcional `month`. Descarga CSV en streaming.</Endpoint>
+</Endpoints>
+
+Categorías válidas: `comida`, `transporte`, `hogar`, `ocio`, `salud`, `otros`.
+
+## Informes y eventos
+
+<Endpoints>
+  <Endpoint method="GET" path="/api/reports/:year" auth>Informe anual calculado en un worker: `count`, `total`, `monthlyAverage`, `topCategory`, `largest`, `byCategory` y `months` (12 resúmenes).</Endpoint>
+  <Endpoint method="GET" path="/api/events" auth>Server-Sent Events con `expense.created`, `expense.updated`, `expense.deleted` y `expense.imported` del usuario.</Endpoint>
+</Endpoints>
+
+## Errores
+
+Todos los errores tienen la misma forma:
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Los datos enviados no son válidos",
+    "details": [{ "field": "amount", "message": "Importe no válido: \"-3\"" }]
+  }
+}
+```
+
+| Código HTTP | `code` | Cuándo |
+| --- | --- | --- |
+| 400 | `VALIDATION_ERROR`, `INVALID_JSON` | Datos o JSON no válidos |
+| 401 | `UNAUTHORIZED` | Falta el token, no es válido o caducó; credenciales incorrectas |
+| 404 | `NOT_FOUND` | Ruta o recurso inexistente (o ajeno) |
+| 409 | `CONFLICT` | Email ya registrado |
+| 413 | `PAYLOAD_TOO_LARGE` | Cuerpo JSON de más de 100 KB |
+| 415 | `UNSUPPORTED_MEDIA_TYPE` | Importación sin `text/csv` |
+| 429 | `RATE_LIMITED` | Demasiados intentos; mira `Retry-After` |
+| 500 | `INTERNAL_ERROR` | Error inesperado (los detalles quedan en los logs) |

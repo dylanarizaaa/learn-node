@@ -1,0 +1,292 @@
+---
+title: Monitor de sitios
+description: Comprueba periódicamente si tus webs y APIs responden — fetch con timeouts, un límite de concurrencia, alertas al cambiar de estado y parada limpia con Ctrl+C.
+difficulty: intermedio
+time: 75
+prerequisites:
+  - http/fetch
+  - javascript/promesas
+related:
+  - nucleo/event-loop
+  - produccion/observabilidad
+resources:
+  - title: MDN — AbortSignal.timeout()
+    url: https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal/timeout_static
+  - title: Node.js — timers/promises
+    url: https://nodejs.org/docs/latest/api/timers.html#timers-promises-api
+goal: Dominar la asincronía en un caso real — peticiones en paralelo con un límite, tiempos máximos, errores de red frente a errores HTTP y un bucle que se detiene limpiamente.
+technologies: ["fetch", "AbortSignal.timeout", "AbortController", "timers/promises", "util.parseArgs", "node:test"]
+features:
+  - Lista de sitios en un archivo JSON
+  - Comprobaciones en paralelo con un máximo configurable
+  - Tiempo límite por petición y latencia medida
+  - Modo vigilancia cada N segundos
+  - Alertas solo cuando un sitio cae o se recupera (opcional, por webhook)
+  - Código de salida 1 si algo falla, para usarlo en scripts
+---
+
+## Descripción del proyecto
+
+Un servicio que pregunta cada minuto a tus sitios «¿sigues ahí?». Es un ejercicio redondo de asincronía: lanzar muchas peticiones sin saturar a nadie, no esperar para siempre a un servidor colgado, distinguir un `500` de un `ECONNREFUSED`, y un bucle infinito que sabe pararse.
+
+```console
+$ node src/cli.js --timeout 1000
+12:57:43
+● API                  200 · 47 ms
+● Panel                HTTP 500
+● Informes             sin respuesta en 1000 ms
+● Antiguo              ECONNREFUSED
+$ echo $?
+1
+```
+
+```json title="sites.json"
+[
+  { "name": "API", "url": "https://api.example.com/health" },
+  { "name": "Panel", "url": "https://panel.example.com" }
+]
+```
+
+## Arquitectura propuesta
+
+<Layers
+  layers={[
+    { title: 'CLI', desc: 'src/cli.js', items: ['una pasada o --interval', 'alertas', 'Ctrl+C'], tone: 'brand' },
+    { title: 'Concurrencia', desc: 'src/pool.js', items: ['mapWithConcurrency'] },
+    { title: 'Comprobación', desc: 'src/check.js', items: ['fetch', 'AbortSignal.timeout', 'latencia'], tone: 'muted' },
+  ]}
+/>
+
+## Estructura de carpetas
+
+```tree
+monitor/
+  package.json
+  sites.json
+  src/
+    check.js * # una comprobación
+    cli.js # bucle y salida
+    pool.js * # límite de concurrencia
+  test/
+    monitor.test.js
+```
+
+## Implementación paso a paso
+
+<Steps>
+<Step title="Comprobar un sitio">
+
+La función **nunca lanza**: siempre devuelve un resultado. Así un sitio caído no tumba la comprobación de los demás. `response.body?.cancel()` descarta el contenido, que no necesitamos, y libera la conexión.
+
+```js title="src/check.js"
+/**
+ * Comprueba un sitio y devuelve el resultado; nunca lanza.
+ * @param {{ name: string, url: string }} site
+ */
+export async function checkSite({ name, url }, { timeoutMs = 5000 } = {}) {
+  const start = performance.now();
+  const elapsed = () => Math.round(performance.now() - start);
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    await response.body?.cancel(); // no necesitamos el contenido: liberamos la conexión
+    return { name, url, ok: response.ok, status: response.status, ms: elapsed() };
+  } catch (error) {
+    return { name, url, ok: false, status: null, ms: elapsed(), error: describe(error, timeoutMs) };
+  }
+}
+
+/** Convierte el error de fetch en un motivo legible. */
+function describe(error, timeoutMs) {
+  if (error.name === 'TimeoutError') return `sin respuesta en ${timeoutMs} ms`;
+  // fetch envuelve el error real en `cause`. Si se probaron varias direcciones
+  // (IPv4 e IPv6), llega un AggregateError con un error por dirección.
+  const cause = error.cause;
+  return cause?.code ?? cause?.errors?.[0]?.code ?? error.message;
+}
+```
+
+</Step>
+<Step title="Un límite de concurrencia">
+
+`Promise.all` con 500 sitios lanzaría 500 peticiones a la vez. Este patrón arranca `limit` «trabajadores» que se van repartiendo la lista. Como JavaScript ejecuta un solo hilo, `next++` no necesita bloqueos.
+
+```js title="src/pool.js"
+/**
+ * Como Promise.all(items.map(fn)), pero con como mucho `limit` tareas a la vez.
+ * Mantiene el orden de los resultados.
+ */
+export async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+
+  async function worker() {
+    while (next < items.length) {
+      const index = next++; // seguro: JavaScript no ejecuta dos líneas a la vez
+      results[index] = await fn(items[index], index);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+```
+
+</Step>
+<Step title="El bucle y las alertas">
+
+En modo vigilancia, la espera entre pasadas usa `setTimeout` de `timers/promises` con una señal: al pulsar Ctrl+C, el `AbortController` interrumpe la espera al instante y el bucle termina. Las alertas solo se envían cuando el estado **cambia**, no en cada pasada.
+
+```js title="src/cli.js"
+#!/usr/bin/env node
+import { readFile } from 'node:fs/promises';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { parseArgs, styleText } from 'node:util';
+import { checkSite } from './check.js';
+import { mapWithConcurrency } from './pool.js';
+
+const { values } = parseArgs({
+  options: {
+    file: { type: 'string', short: 'f', default: 'sites.json' },
+    interval: { type: 'string', short: 'i' }, // segundos; sin él, una sola pasada
+    timeout: { type: 'string', default: '5000' },
+    concurrency: { type: 'string', short: 'c', default: '5' },
+  },
+});
+
+const sites = JSON.parse(await readFile(values.file, 'utf8'));
+const options = { timeoutMs: Number(values.timeout) };
+const previous = new Map(); // url → ok de la pasada anterior
+
+function print(results) {
+  console.log(styleText('dim', `\n${new Date().toLocaleTimeString('es')}`));
+  for (const r of results) {
+    const mark = r.ok ? styleText('green', '●') : styleText('red', '●');
+    const detail = r.ok ? `${r.status} · ${r.ms} ms` : (r.error ?? `HTTP ${r.status}`);
+    console.log(`${mark} ${r.name.padEnd(20)} ${styleText('dim', detail)}`);
+  }
+}
+
+async function alertChanges(results) {
+  for (const r of results) {
+    const before = previous.get(r.url);
+    previous.set(r.url, r.ok);
+    if (before === undefined || before === r.ok) continue;
+    const message = r.ok ? `✅ ${r.name} se ha recuperado` : `🔴 ${r.name} ha caído: ${r.error ?? `HTTP ${r.status}`}`;
+    console.log(styleText('bold', message));
+    if (process.env.ALERT_WEBHOOK) {
+      // Un fallo al avisar no debe parar el monitor.
+      await fetch(process.env.ALERT_WEBHOOK, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: message }),
+        signal: AbortSignal.timeout(5000),
+      }).catch((error) => console.error(`No se pudo enviar la alerta: ${error.message}`));
+    }
+  }
+}
+
+const runOnce = () => mapWithConcurrency(sites, Number(values.concurrency), (site) => checkSite(site, options));
+
+if (!values.interval) {
+  const results = await runOnce();
+  print(results);
+  process.exitCode = results.every((r) => r.ok) ? 0 : 1; // útil en scripts y CI
+} else {
+  const controller = new AbortController();
+  process.once('SIGINT', () => controller.abort()); // Ctrl+C: termina limpio
+  try {
+    while (!controller.signal.aborted) {
+      const results = await runOnce();
+      print(results);
+      await alertChanges(results);
+      await sleep(Number(values.interval) * 1000, undefined, { signal: controller.signal });
+    }
+  } catch (error) {
+    if (error.name !== 'AbortError') throw error;
+  }
+  console.log('\nMonitor detenido.');
+}
+```
+
+```console
+$ node src/cli.js -i 1
+12:57:52
+● API                  200 · 4 ms
+
+12:57:53
+● API                  HTTP 503
+🔴 API ha caído: HTTP 503
+^C
+Monitor detenido.
+```
+
+</Step>
+<Step title="Tests sin depender de Internet">
+
+Un servidor local con rutas que responden bien, con error o demasiado tarde. Ojo con un detalle: `fetch` rechaza algunos puertos «peligrosos» (como el 1 o el 25) con `bad port`; para simular un servicio caído, usa un puerto alto sin nada escuchando.
+
+```js title="test/monitor.test.js"
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import { createServer } from 'node:http';
+import { after, before, test } from 'node:test';
+import { checkSite } from '../src/check.js';
+import { mapWithConcurrency } from '../src/pool.js';
+
+let server;
+let base;
+before(async () => {
+  server = createServer((req, res) => {
+    if (req.url === '/lento') return setTimeout(() => res.end('ok'), 300);
+    res.statusCode = req.url === '/error' ? 500 : 200;
+    res.end('ok');
+  }).listen(0);
+  await once(server, 'listening');
+  base = `http://localhost:${server.address().port}`;
+});
+after(() => server.close());
+
+test('distingue sitios correctos, con error y que no responden', async () => {
+  const ok = await checkSite({ name: 'ok', url: `${base}/` });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.status, 200);
+
+  const failing = await checkSite({ name: 'error', url: `${base}/error` });
+  assert.equal(failing.ok, false);
+  assert.equal(failing.status, 500);
+
+  const slow = await checkSite({ name: 'lento', url: `${base}/lento` }, { timeoutMs: 100 });
+  assert.equal(slow.error, 'sin respuesta en 100 ms');
+
+  const down = await checkSite({ name: 'caído', url: 'http://localhost:59999' });
+  assert.equal(down.error, 'ECONNREFUSED');
+});
+
+test('nunca ejecuta más tareas de las permitidas y conserva el orden', async () => {
+  let running = 0;
+  let max = 0;
+  const results = await mapWithConcurrency([1, 2, 3, 4, 5, 6], 2, async (n) => {
+    max = Math.max(max, ++running);
+    await new Promise((r) => setTimeout(r, 10));
+    running--;
+    return n * 10;
+  });
+  assert.equal(max, 2);
+  assert.deepEqual(results, [10, 20, 30, 40, 50, 60]);
+});
+```
+
+</Step>
+</Steps>
+
+## Propuestas de mejora
+
+<Checklist
+  items={[
+    'Reintentar una vez antes de declarar caído un sitio (evita falsas alarmas).',
+    'Guardar el historial en SQLite y calcular el porcentaje de disponibilidad.',
+    'Comprobar también el contenido (que la respuesta contenga un texto esperado).',
+    'Avisar cuando un certificado TLS esté a punto de caducar (node:tls).',
+    'Exponer el estado en una página con Server-Sent Events.',
+  ]}
+/>

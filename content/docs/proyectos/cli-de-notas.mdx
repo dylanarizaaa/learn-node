@@ -1,0 +1,256 @@
+---
+title: CLI de notas
+description: Una herramienta de terminal para guardar notas con etiquetas en un archivo JSON de tu carpeta personal, con búsqueda, borrado y tests.
+difficulty: principiante
+time: 60
+prerequisites:
+  - nucleo/process-y-argumentos
+  - nucleo/sistema-de-archivos
+related:
+  - nucleo/path-y-url
+  - calidad/test-runner
+resources:
+  - title: Node.js — util.parseArgs
+    url: https://nodejs.org/docs/latest/api/util.html#utilparseargsconfig
+  - title: Node.js — os.homedir
+    url: https://nodejs.org/docs/latest/api/os.html#oshomedir
+goal: Construir una CLI completa separando la lógica pura (fácil de probar) de la entrada/salida, con argumentos validados, códigos de salida y escritura atómica.
+technologies: ["Node.js 26", "util.parseArgs", "fs/promises", "os.homedir", "util.styleText", "node:test"]
+features:
+  - Crear notas con varias etiquetas (-t casa -t urgente)
+  - Listar todas o filtrar por etiqueta
+  - Buscar por texto sin distinguir mayúsculas
+  - Borrar por id con mensaje de error claro
+  - Archivo en la carpeta personal o en NOTAS_FILE
+  - Instalable como comando global con npm link
+---
+
+## Descripción del proyecto
+
+Una CLI pequeña pero completa: `notas add "Comprar café" -t casa`. Es el mejor ejercicio para consolidar lo básico de Node (argumentos, archivos, rutas, códigos de salida) y una idea que se repite en todo el backend: **separar la lógica pura de la entrada/salida**. Las operaciones sobre la lista de notas no tocan el disco, así que se prueban en milisegundos.
+
+```console
+$ notas add Comprar café -t casa
+✔ Nota #1 guardada
+$ notas add "Revisar el informe" -t trabajo -t urgente
+✔ Nota #2 guardada
+$ notas list
+  #1  Comprar café #casa
+  #2  Revisar el informe #trabajo #urgente
+$ notas rm 7
+✖ No existe la nota #7
+```
+
+## Arquitectura propuesta
+
+<Layers
+  layers={[
+    { title: 'CLI', desc: 'src/cli.js', items: ['parseArgs', 'styleText', 'códigos de salida'], tone: 'brand' },
+    { title: 'Lógica', desc: 'src/notes.js', items: ['addNote', 'removeNote', 'findNotes'] },
+    { title: 'Almacenamiento', desc: 'src/store.js', items: ['~/.notas.json', 'escritura atómica'], tone: 'muted' },
+  ]}
+/>
+
+## Estructura de carpetas
+
+```tree
+notas/
+  package.json
+  src/
+    cli.js * # entrada: argumentos y salida
+    notes.js * # funciones puras
+    notes.test.js
+    store.js # lectura y escritura del JSON
+```
+
+## Implementación paso a paso
+
+<Steps>
+<Step title="Crea el proyecto">
+
+```bash
+mkdir notas && cd notas
+npm init -y
+npm pkg set type=module bin.notas=./src/cli.js
+```
+
+</Step>
+<Step title="Almacenamiento en la carpeta personal">
+
+`os.homedir()` devuelve la carpeta del usuario en cualquier sistema operativo. Una variable de entorno permite cambiar el archivo (útil para probar sin tocar tus notas reales). Si el archivo no existe, no es un error: todavía no hay notas.
+
+```js title="src/store.js"
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
+
+/** Ruta del archivo: NOTAS_FILE o ~/.notas.json */
+export const NOTES_FILE = process.env.NOTAS_FILE ?? join(homedir(), '.notas.json');
+
+export async function loadNotes(file = NOTES_FILE) {
+  try {
+    return JSON.parse(await readFile(file, 'utf8'));
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw new Error(`No se pudo leer ${file}: ${error.message}`, { cause: error });
+  }
+}
+
+export async function saveNotes(notes, file = NOTES_FILE) {
+  await mkdir(dirname(file), { recursive: true });
+  const temp = `${file}.tmp`;
+  await writeFile(temp, `${JSON.stringify(notes, null, 2)}\n`);
+  await rename(temp, file); // escritura atómica
+}
+```
+
+</Step>
+<Step title="Lógica pura">
+
+Cada función recibe la lista y devuelve una **nueva**, sin modificar la original. Las etiquetas se normalizan a minúsculas y sin duplicados con un `Set`.
+
+```js title="src/notes.js"
+// Operaciones puras sobre la lista de notas: no leen ni escriben archivos.
+
+export function addNote(notes, text, tags = []) {
+  const clean = text.trim();
+  if (!clean) throw new RangeError('La nota no puede estar vacía');
+  const id = notes.reduce((max, n) => Math.max(max, n.id), 0) + 1;
+  const note = { id, text: clean, tags: [...new Set(tags.map((t) => t.toLowerCase()))], createdAt: new Date().toISOString() };
+  return { notes: [...notes, note], note };
+}
+
+export function removeNote(notes, id) {
+  const rest = notes.filter((n) => n.id !== id);
+  if (rest.length === notes.length) throw new RangeError(`No existe la nota #${id}`);
+  return rest;
+}
+
+export function findNotes(notes, { tag, query } = {}) {
+  const q = query?.toLowerCase();
+  return notes.filter(
+    (n) => (!tag || n.tags.includes(tag.toLowerCase())) && (!q || n.text.toLowerCase().includes(q)),
+  );
+}
+```
+
+</Step>
+<Step title="Pruébala">
+
+```js title="src/notes.test.js"
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { addNote, findNotes, removeNote } from './notes.js';
+
+test('añade, busca y borra notas sin modificar la lista original', () => {
+  const empty = [];
+  const { notes, note } = addNote(empty, '  Comprar café ', ['Casa', 'casa']);
+  assert.equal(empty.length, 0);
+  assert.equal(note.text, 'Comprar café');
+  assert.deepEqual(note.tags, ['casa']);
+
+  const more = addNote(notes, 'Llamar a Ana', ['trabajo']).notes;
+  assert.equal(findNotes(more, { tag: 'CASA' }).length, 1);
+  assert.equal(findNotes(more, { query: 'ana' })[0].id, 2);
+
+  assert.equal(removeNote(more, 1).length, 1);
+  assert.throws(() => removeNote(more, 9), RangeError);
+  assert.throws(() => addNote(more, '   '), RangeError);
+});
+```
+
+```console
+$ node --test
+✔ añade, busca y borra notas sin modificar la lista original (1.2ms)
+ℹ pass 1
+```
+
+</Step>
+<Step title="La interfaz de línea de comandos">
+
+`multiple: true` permite repetir `-t`. Los errores se muestran en una línea, en rojo, con código de salida 1 (o 2 si la opción no existe).
+
+```js title="src/cli.js"
+#!/usr/bin/env node
+import { parseArgs, styleText } from 'node:util';
+import { addNote, findNotes, removeNote } from './notes.js';
+import { loadNotes, NOTES_FILE, saveNotes } from './store.js';
+
+const HELP = `Uso: notas <comando> [opciones]
+
+  add <texto> [-t etiqueta]...   Crea una nota (puedes repetir -t)
+  list [-t etiqueta]             Lista las notas
+  search <texto>                 Busca en el texto de las notas
+  rm <id>                        Borra una nota
+
+Archivo: ${NOTES_FILE}`;
+
+function print(notes) {
+  if (notes.length === 0) return console.log(styleText('dim', 'No hay notas.'));
+  for (const n of notes) {
+    const tags = n.tags.map((t) => styleText('cyan', `#${t}`)).join(' ');
+    console.log(`${styleText('dim', `#${n.id}`.padStart(4))}  ${n.text} ${tags}`);
+  }
+}
+
+try {
+  const { values, positionals } = parseArgs({
+    allowPositionals: true,
+    options: {
+      tag: { type: 'string', short: 't', multiple: true, default: [] },
+      help: { type: 'boolean', short: 'h', default: false },
+    },
+  });
+  const [command, ...args] = positionals;
+  const notes = await loadNotes();
+
+  switch (values.help ? undefined : command) {
+    case 'add': {
+      const result = addNote(notes, args.join(' '), values.tag);
+      await saveNotes(result.notes);
+      console.log(styleText('green', `✔ Nota #${result.note.id} guardada`));
+      break;
+    }
+    case 'list':
+      print(findNotes(notes, { tag: values.tag[0] }));
+      break;
+    case 'search':
+      print(findNotes(notes, { query: args.join(' ') }));
+      break;
+    case 'rm':
+      await saveNotes(removeNote(notes, Number(args[0])));
+      console.log(styleText('green', `✔ Nota #${args[0]} borrada`));
+      break;
+    default:
+      console.log(HELP);
+      if (!values.help) process.exitCode = 2;
+  }
+} catch (error) {
+  console.error(styleText('red', `✖ ${error.message}`));
+  process.exitCode = error.code?.startsWith('ERR_PARSE_ARGS') ? 2 : 1;
+}
+```
+
+</Step>
+<Step title="Instálala como comando">
+
+```bash
+chmod +x src/cli.js
+npm link
+notas add "Funciona desde cualquier carpeta" -t prueba
+```
+
+</Step>
+</Steps>
+
+## Propuestas de mejora
+
+<Checklist
+  items={[
+    'Editar una nota: notas edit <id> <texto nuevo>.',
+    'Exportar a Markdown agrupando por etiqueta.',
+    'Notas con fecha de recordatorio y un comando "hoy".',
+    'Confirmación antes de borrar con node:readline/promises.',
+    'Comprobar que los colores se desactivan con la variable NO_COLOR (styleText la respeta).',
+  ]}
+/>

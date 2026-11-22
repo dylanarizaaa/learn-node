@@ -1,0 +1,372 @@
+---
+title: Chat en tiempo real
+description: Un chat con salas usando WebSockets (ws) — protocolo de mensajes JSON, difusión por sala, validación, latidos para conexiones muertas y un cliente web mínimo.
+difficulty: avanzado
+time: 120
+prerequisites:
+  - avanzado/tiempo-real
+  - nucleo/eventos
+related:
+  - avanzado/cluster
+  - express/cors-y-cabeceras
+resources:
+  - title: ws — Documentación
+    url: https://github.com/websockets/ws
+  - title: MDN — WebSocket
+    url: https://developer.mozilla.org/es/docs/Web/API/WebSocket
+  - title: Node.js — WebSocket (cliente global)
+    url: https://nodejs.org/docs/latest/api/globals.html#websocket
+goal: Diseñar un protocolo de mensajes sobre WebSockets y gestionar el estado de muchas conexiones vivas — salas, difusión, validación y limpieza de conexiones muertas.
+technologies: ["ws", "node:http", "WebSocket", "WeakMap", "node:test", "JSON"]
+features:
+  - Salas independientes elegidas por URL (?sala=equipo)
+  - Lista de personas conectadas en cada sala
+  - Mensajes validados y limitados en tamaño
+  - Latidos ping/pong que expulsan conexiones muertas
+  - Cliente web sin dependencias y a prueba de XSS
+  - Tests con el cliente WebSocket que trae Node
+---
+
+## Descripción del proyecto
+
+Un chat es el «hola mundo» del tiempo real, pero hacerlo bien obliga a pensar en cosas que una API REST no tiene: **estado por conexión** (quién es cada socket y en qué sala está), **difusión** a un grupo, y conexiones que mueren sin avisar (un móvil que pierde la cobertura no envía «adiós»).
+
+Cliente y servidor hablan con un protocolo JSON sencillo:
+
+| Del cliente | Del servidor |
+| --- | --- |
+| `{ "type": "join", "name": "Ana", "room": "general" }` | `{ "type": "system", "text": "Ana se ha unido", "users": [...] }` |
+| `{ "type": "message", "text": "Hola" }` | `{ "type": "message", "name": "Ana", "text": "Hola", "at": "…" }` |
+| | `{ "type": "error", "text": "…" }` |
+
+## Arquitectura propuesta
+
+<Layers
+  layers={[
+    { title: 'Cliente', desc: 'public/app.js', items: ['WebSocket del navegador', 'textContent'], tone: 'muted' },
+    { title: 'Servidor HTTP', desc: 'src/server.js', items: ['GET /', 'Upgrade → ws'] },
+    { title: 'Chat', desc: 'src/chat.js', items: ['salas: Map<sala, Set<socket>>', 'estado: WeakMap', 'latidos'], tone: 'brand' },
+  ]}
+/>
+
+## Estructura de carpetas
+
+```tree
+chat/
+  package.json
+  public/
+    index.html
+    app.js # cliente
+  src/
+    chat.js * # salas, mensajes y latidos
+    server.js # HTTP + WebSocket en el mismo puerto
+  test/
+    chat.test.js
+```
+
+## Implementación paso a paso
+
+<Steps>
+<Step title="Prepara el proyecto">
+
+Node trae un **cliente** `WebSocket` global, pero no un servidor: para eso se usa `ws`, la librería estándar.
+
+```bash
+mkdir chat && cd chat
+npm init -y
+npm pkg set type=module scripts.start="node src/server.js" scripts.test="node --test"
+npm install ws
+```
+
+</Step>
+<Step title="La lógica del chat">
+
+- Las salas son un `Map` de nombre → `Set` de sockets; una sala vacía se borra.
+- El estado de cada socket vive en un `WeakMap`: cuando el socket desaparece, su estado se libera solo.
+- Todo lo que llega se valida: JSON roto, nombres vacíos, salas con caracteres raros o textos enormes.
+- Cada 30 s se envía un *ping*. El cliente responde con *pong* automáticamente; quien no responde a tiempo se desconecta con `terminate()`.
+
+```js title="src/chat.js"
+const NAME = /^.{1,20}$/u;
+const ROOM = /^[\w-]{1,30}$/;
+
+/**
+ * Lógica del chat sobre un WebSocketServer de `ws`: salas, difusión,
+ * validación de mensajes y latidos para detectar conexiones muertas.
+ *
+ * @param {import('ws').WebSocketServer} wss
+ */
+export function createChat(wss, { heartbeatMs = 30_000 } = {}) {
+  /** @type {Map<string, Set<import('ws').WebSocket>>} */
+  const rooms = new Map();
+  const state = new WeakMap(); // socket → { name, room, alive }
+
+  const send = (socket, message) => socket.send(JSON.stringify(message));
+
+  function broadcast(room, message) {
+    for (const socket of rooms.get(room) ?? []) {
+      if (socket.readyState === socket.OPEN) send(socket, message);
+    }
+  }
+
+  function usersIn(room) {
+    return [...(rooms.get(room) ?? [])].map((s) => state.get(s).name);
+  }
+
+  function leave(socket) {
+    const { name, room } = state.get(socket) ?? {};
+    if (!room) return;
+    rooms.get(room).delete(socket);
+    if (rooms.get(room).size === 0) rooms.delete(room);
+    broadcast(room, { type: 'system', text: `${name} ha salido`, users: usersIn(room) });
+  }
+
+  function handle(socket, raw) {
+    let message;
+    try {
+      message = JSON.parse(raw);
+    } catch {
+      return send(socket, { type: 'error', text: 'Mensaje no válido' });
+    }
+    const current = state.get(socket);
+
+    if (message.type === 'join') {
+      const name = String(message.name ?? '').trim();
+      const room = String(message.room ?? '');
+      if (!NAME.test(name) || !ROOM.test(room)) {
+        return send(socket, { type: 'error', text: 'Nombre (1-20) o sala (letras, números y guiones) no válidos' });
+      }
+      leave(socket); // por si cambia de sala
+      Object.assign(current, { name, room });
+      if (!rooms.has(room)) rooms.set(room, new Set());
+      rooms.get(room).add(socket);
+      return broadcast(room, { type: 'system', text: `${name} se ha unido`, users: usersIn(room) });
+    }
+
+    if (message.type === 'message') {
+      if (!current.room) return send(socket, { type: 'error', text: 'Primero únete a una sala' });
+      const text = String(message.text ?? '').trim().slice(0, 500);
+      if (!text) return;
+      return broadcast(current.room, { type: 'message', name: current.name, text, at: new Date().toISOString() });
+    }
+
+    send(socket, { type: 'error', text: `Tipo desconocido: ${message.type}` });
+  }
+
+  wss.on('connection', (socket) => {
+    state.set(socket, { name: null, room: null, alive: true });
+    socket.on('pong', () => (state.get(socket).alive = true));
+    socket.on('message', (data) => handle(socket, data.toString()));
+    socket.on('close', () => leave(socket));
+  });
+
+  // Latido: si un cliente no contesta al ping anterior, la conexión está muerta.
+  const heartbeat = setInterval(() => {
+    for (const socket of wss.clients) {
+      const s = state.get(socket);
+      if (!s.alive) {
+        socket.terminate();
+        continue;
+      }
+      s.alive = false;
+      socket.ping();
+    }
+  }, heartbeatMs);
+  heartbeat.unref();
+
+  return { close: () => clearInterval(heartbeat) };
+}
+```
+
+</Step>
+<Step title="Servidor HTTP y WebSocket en el mismo puerto">
+
+Un WebSocket empieza como una petición HTTP con la cabecera `Upgrade: websocket`. Al pasar `server` a `WebSocketServer`, `ws` atiende esas peticiones y el resto sigue al handler HTTP. `maxPayload` limita el tamaño de cada mensaje.
+
+```js title="src/server.js"
+import { readFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import { WebSocketServer } from 'ws';
+import { createChat } from './chat.js';
+
+const PORT = Number(process.env.PORT ?? 3000);
+const files = {
+  '/': ['index.html', 'text/html; charset=utf-8'],
+  '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
+};
+
+const server = createServer(async (req, res) => {
+  const file = files[req.url ?? ''];
+  if (!file) return res.writeHead(404).end();
+  res.writeHead(200, { 'Content-Type': file[1] });
+  res.end(await readFile(new URL(`../public/${file[0]}`, import.meta.url)));
+});
+
+// El servidor WebSocket comparte puerto con HTTP: atiende las peticiones "Upgrade".
+const wss = new WebSocketServer({ server, maxPayload: 16 * 1024 });
+const chat = createChat(wss);
+
+server.listen(PORT, () => console.log(`Chat en http://localhost:${PORT}`));
+
+process.once('SIGINT', () => {
+  chat.close();
+  for (const socket of wss.clients) socket.close(1001, 'Servidor apagándose');
+  server.close();
+});
+```
+
+</Step>
+<Step title="El cliente web">
+
+Lo más importante: el texto de los mensajes se pinta con `textContent`. Con `innerHTML`, cualquiera podría enviar `<img onerror=…>` y ejecutar código en el navegador de los demás.
+
+```html title="public/index.html"
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chat</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; }
+      #log { border: 1px solid #ddd; border-radius: 8px; height: 50vh; overflow-y: auto; padding: 0.5rem; }
+      .system { color: #777; font-style: italic; }
+      form { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+      input { flex: 1; padding: 0.5rem; }
+    </style>
+  </head>
+  <body>
+    <h1>Chat <small id="room"></small></h1>
+    <p id="users"></p>
+    <div id="log"></div>
+    <form id="form"><input id="text" autocomplete="off" placeholder="Escribe un mensaje…" /><button>Enviar</button></form>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
+```
+
+```js title="public/app.js"
+const name = prompt('¿Cómo te llamas?') || 'Anónimo';
+const room = new URLSearchParams(location.search).get('sala') ?? 'general';
+const log = document.querySelector('#log');
+
+const socket = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`);
+socket.addEventListener('open', () => socket.send(JSON.stringify({ type: 'join', name, room })));
+
+socket.addEventListener('message', (event) => {
+  const message = JSON.parse(event.data);
+  const line = document.createElement('p');
+  // textContent, nunca innerHTML: el texto viene de otras personas (evita XSS).
+  line.textContent = message.type === 'message' ? `${message.name}: ${message.text}` : message.text;
+  if (message.type !== 'message') line.className = 'system';
+  if (message.users) document.querySelector('#users').textContent = `Conectados: ${message.users.join(', ')}`;
+  log.append(line);
+  log.scrollTop = log.scrollHeight;
+});
+
+document.querySelector('#room').textContent = `#${room}`;
+document.querySelector('#form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  const input = document.querySelector('#text');
+  socket.send(JSON.stringify({ type: 'message', text: input.value }));
+  input.value = '';
+});
+```
+
+Abre `http://localhost:3000/?sala=equipo` en dos pestañas y chatea contigo.
+
+</Step>
+<Step title="Tests con el WebSocket de Node">
+
+El ayudante `connect` encola los mensajes recibidos para poder esperarlos uno a uno con `await next()`, sin temporizadores frágiles.
+
+```js title="test/chat.test.js"
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import { createServer } from 'node:http';
+import { after, before, test } from 'node:test';
+import { WebSocketServer } from 'ws';
+import { createChat } from '../src/chat.js';
+
+let server;
+let wss;
+let chat;
+let url;
+before(async () => {
+  server = createServer().listen(0);
+  await once(server, 'listening');
+  wss = new WebSocketServer({ server });
+  chat = createChat(wss);
+  url = `ws://localhost:${server.address().port}`;
+});
+after(() => {
+  chat.close();
+  for (const socket of wss.clients) socket.terminate();
+  server.close();
+});
+
+/** Cliente de prueba con el WebSocket global de Node y una cola de mensajes recibidos. */
+async function connect(name, room) {
+  const socket = new WebSocket(url);
+  const inbox = [];
+  const waiters = [];
+  socket.addEventListener('message', (event) => {
+    const message = JSON.parse(event.data);
+    const waiter = waiters.shift();
+    waiter ? waiter(message) : inbox.push(message);
+  });
+  await once(socket, 'open');
+  const next = () => (inbox.length ? Promise.resolve(inbox.shift()) : new Promise((r) => waiters.push(r)));
+  const send = (message) => socket.send(JSON.stringify(message));
+  if (name) {
+    send({ type: 'join', name, room });
+    await next(); // su propio aviso de "se ha unido"
+  }
+  return { socket, next, send };
+}
+
+test('difunde los mensajes solo dentro de la sala', async () => {
+  const ana = await connect('Ana', 'general');
+  const luis = await connect('Luis', 'general');
+  const eva = await connect('Eva', 'otra');
+
+  assert.deepEqual((await ana.next()).users, ['Ana', 'Luis']); // Ana ve llegar a Luis
+
+  luis.send({ type: 'message', text: 'Hola' });
+  const received = await ana.next();
+  assert.equal(received.name, 'Luis');
+  assert.equal(received.text, 'Hola');
+  assert.equal((await luis.next()).text, 'Hola'); // el remitente también lo recibe
+
+  eva.send({ type: 'message', text: 'Nadie me oye' });
+  assert.equal((await eva.next()).text, 'Nadie me oye');
+
+  for (const c of [ana, luis, eva]) c.socket.close();
+});
+
+test('rechaza mensajes no válidos', async () => {
+  const client = await connect();
+  client.socket.send('no es json');
+  assert.equal((await client.next()).type, 'error');
+  client.send({ type: 'message', text: 'sin sala' });
+  assert.match((await client.next()).text, /únete/);
+  client.send({ type: 'join', name: '', room: 'x' });
+  assert.equal((await client.next()).type, 'error');
+  client.socket.close();
+});
+```
+
+</Step>
+</Steps>
+
+## Propuestas de mejora
+
+<Checklist
+  items={[
+    'Autenticación con el JWT de Monedero, enviado en el primer mensaje (el navegador no permite cabeceras en WebSocket).',
+    'Historial de los últimos 50 mensajes de cada sala en SQLite al entrar.',
+    'Indicador de «está escribiendo…» con un tipo de mensaje nuevo.',
+    'Límite de mensajes por segundo por conexión.',
+    'Varias instancias con Redis pub/sub para difundir entre procesos.',
+  ]}
+/>

@@ -1,0 +1,405 @@
+---
+title: Cola de trabajos
+description: Una cola persistente en SQLite para tareas en segundo plano — reclamación atómica, reintentos con backoff exponencial, concurrencia, worker threads y parada ordenada.
+difficulty: avanzado
+time: 150
+prerequisites:
+  - avanzado/worker-threads
+  - datos/transacciones
+related:
+  - produccion/apagado-ordenado
+  - calidad/mocks
+resources:
+  - title: SQLite — UPDATE … RETURNING
+    url: https://www.sqlite.org/lang_returning.html
+  - title: AWS — Exponential backoff and jitter
+    url: https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
+  - title: BullMQ (cola sobre Redis para producción)
+    url: https://docs.bullmq.io/
+goal: Construir la infraestructura que hay detrás de los envíos de email, los informes o las notificaciones de cualquier app — trabajos que sobreviven a reinicios, se reintentan y no bloquean al servidor.
+technologies: ["node:sqlite", "worker_threads", "timers/promises", "AbortController", "node:test"]
+features:
+  - Trabajos persistentes que sobreviven a un reinicio
+  - Reclamación atómica (un trabajo nunca se ejecuta dos veces a la vez)
+  - Reintentos con espera exponencial y trabajos fallidos guardados
+  - Trabajos programados para más tarde
+  - Varios trabajos en paralelo con un límite
+  - Tareas de CPU en worker threads
+  - Parada ordenada que termina lo que está en curso
+---
+
+## Descripción del proyecto
+
+Enviar un email tras registrarse, generar un PDF, redimensionar una foto: no conviene hacerlo **dentro** de la petición HTTP (el cliente esperaría, y si el servicio externo falla, ¿qué hacemos?). Se **encola** y un proceso aparte lo ejecuta, reintentando si falla.
+
+```console
+$ npm start
+Recuperados 0 trabajos interrumpidos
+✔ #1 email
+✖ #2 email (intento 1/3): El servidor de correo rechazó el envío a nadie@example.com
+✔ #3 primes
+✖ #2 email (intento 2/3): El servidor de correo rechazó el envío a nadie@example.com
+Estado: { done: 2, pending: 2 }
+✔ #4 email
+✖ #2 email (intento 3/3): El servidor de correo rechazó el envío a nadie@example.com
+Estado: { done: 3, failed: 1 }
+^C
+Terminando los trabajos en curso…
+Estado final: { done: 3, failed: 1 }
+```
+
+## Arquitectura propuesta
+
+<Flow
+  steps={[
+    { title: 'enqueue()', desc: 'la API o un script', tone: 'muted' },
+    { title: 'jobs (SQLite)', desc: 'pending · run_at' },
+    { title: 'claim()', desc: 'UPDATE … RETURNING', tone: 'brand' },
+    { title: 'handler', desc: 'async o worker thread' },
+    { title: 'complete / fail', desc: 'done, reintento o failed' },
+  ]}
+/>
+
+## Estructura de carpetas
+
+```tree
+cola/
+  package.json
+  src/
+    queue.js * # la cola sobre SQLite
+    runner.js * # bucles de trabajo y parada ordenada
+    handlers.js # qué hace cada tipo de trabajo
+    primes.worker.js # trabajo de CPU en otro hilo
+    index.js # demo
+  test/
+    queue.test.js
+```
+
+## Implementación paso a paso
+
+<Steps>
+<Step title="La cola">
+
+Cada trabajo es una fila con su estado, sus intentos y **cuándo puede ejecutarse** (`run_at`). Las decisiones clave:
+
+- **Reclamar es una sola sentencia** (`UPDATE … WHERE id = (SELECT …) RETURNING`): elegir y marcar ocurren a la vez, así que dos ejecutores nunca cogen el mismo trabajo.
+- **Backoff exponencial**: tras cada fallo, la espera se duplica (1 s, 2 s, 4 s…). Reintentar al instante contra un servicio caído solo empeora las cosas.
+- **El reloj se inyecta** (`now`), para que los tests controlen el tiempo.
+- `recover()` devuelve a la cola lo que quedó en `running` si el proceso murió a mitad.
+
+```js title="src/queue.js"
+import { DatabaseSync } from 'node:sqlite';
+
+const SCHEMA = `
+  CREATE TABLE IF NOT EXISTS jobs (
+    id           INTEGER PRIMARY KEY,
+    type         TEXT    NOT NULL,
+    payload      TEXT    NOT NULL,                 -- JSON
+    status       TEXT    NOT NULL DEFAULT 'pending', -- pending | running | done | failed
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    run_at       INTEGER NOT NULL,                 -- cuándo puede ejecutarse (ms)
+    last_error   TEXT,
+    result       TEXT
+  );
+  CREATE INDEX IF NOT EXISTS jobs_ready ON jobs (status, run_at);
+`;
+
+/** Espera antes del reintento n: 1 s, 2 s, 4 s, 8 s… (backoff exponencial). */
+export const backoff = (attempt) => 1000 * 2 ** (attempt - 1);
+
+/**
+ * Cola de trabajos persistente en SQLite: sobrevive a reinicios y permite
+ * reintentos con espera creciente.
+ */
+export function createQueue(path = ':memory:', { now = Date.now } = {}) {
+  const db = new DatabaseSync(path);
+  db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
+  db.exec(SCHEMA);
+
+  const insert = db.prepare(
+    'INSERT INTO jobs (type, payload, max_attempts, run_at) VALUES (?, ?, ?, ?) RETURNING id',
+  );
+  // Reclamar es UNA sentencia: elige el siguiente trabajo listo y lo marca como "running".
+  // Ningún otro proceso puede reclamar el mismo, porque SQLite serializa las escrituras.
+  const claim = db.prepare(`
+    UPDATE jobs SET status = 'running', attempts = attempts + 1
+    WHERE id = (
+      SELECT id FROM jobs WHERE status = 'pending' AND run_at <= ? ORDER BY run_at, id LIMIT 1
+    )
+    RETURNING id, type, payload, attempts, max_attempts AS maxAttempts`);
+  const complete = db.prepare("UPDATE jobs SET status = 'done', result = ? WHERE id = ?");
+  const retry = db.prepare("UPDATE jobs SET status = 'pending', run_at = ?, last_error = ? WHERE id = ?");
+  const bury = db.prepare("UPDATE jobs SET status = 'failed', last_error = ? WHERE id = ?");
+
+  return {
+    enqueue(type, payload = {}, { delayMs = 0, maxAttempts = 3 } = {}) {
+      return insert.get(type, JSON.stringify(payload), maxAttempts, now() + delayMs).id;
+    },
+
+    claim() {
+      const job = claim.get(now());
+      return job ? { ...job, payload: JSON.parse(job.payload) } : undefined;
+    },
+
+    complete(id, result = null) {
+      complete.run(JSON.stringify(result), id);
+    },
+
+    /** Reintenta más tarde o, si se agotaron los intentos, lo da por fallido. */
+    fail(job, error) {
+      const message = String(error?.message ?? error);
+      if (job.attempts < job.maxAttempts) retry.run(now() + backoff(job.attempts), message, job.id);
+      else bury.run(message, job.id);
+    },
+
+    /** Tras una caída, los trabajos que estaban "running" vuelven a la cola. */
+    recover() {
+      return db.prepare("UPDATE jobs SET status = 'pending' WHERE status = 'running'").run().changes;
+    },
+
+    get(id) {
+      const row = db.prepare('SELECT * FROM jobs WHERE id = ?').get(id);
+      return row && { ...row };
+    },
+
+    stats() {
+      return Object.fromEntries(
+        db.prepare('SELECT status, COUNT(*) AS n FROM jobs GROUP BY status').all().map((r) => [r.status, r.n]),
+      );
+    },
+
+    close: () => db.close(),
+  };
+}
+```
+
+</Step>
+<Step title="El ejecutor">
+
+`concurrency` bucles independientes reclaman y ejecutan trabajos. Cuando no hay nada listo, esperan `pollMs` con una señal: `stop()` aborta la espera al instante, pero **no** interrumpe los trabajos en curso; `Promise.all(loops)` espera a que terminen.
+
+```js title="src/runner.js"
+import { setTimeout as sleep } from 'node:timers/promises';
+
+/**
+ * Procesa la cola con `concurrency` trabajos a la vez. stop() deja de reclamar
+ * trabajos nuevos y espera a que terminen los que están en marcha.
+ */
+export function createRunner({ queue, handlers, concurrency = 2, pollMs = 500, log = console }) {
+  const controller = new AbortController();
+  let loops = [];
+
+  async function loop() {
+    while (!controller.signal.aborted) {
+      const job = queue.claim();
+      if (!job) {
+        // Nada listo: espera un poco (o hasta que llamen a stop()).
+        await sleep(pollMs, undefined, { signal: controller.signal }).catch(() => {});
+        continue;
+      }
+      const handler = handlers[job.type];
+      try {
+        if (!handler) throw new Error(`No hay handler para "${job.type}"`);
+        const result = await handler(job.payload, job);
+        queue.complete(job.id, result);
+        log.info?.(`✔ #${job.id} ${job.type}`);
+      } catch (error) {
+        queue.fail(job, error);
+        log.warn?.(`✖ #${job.id} ${job.type} (intento ${job.attempts}/${job.maxAttempts}): ${error.message}`);
+      }
+    }
+  }
+
+  return {
+    start() {
+      loops = Array.from({ length: concurrency }, loop);
+    },
+    async stop() {
+      controller.abort();
+      await Promise.all(loops); // los trabajos en curso terminan antes de salir
+    },
+  };
+}
+```
+
+</Step>
+<Step title="Los handlers">
+
+Un handler es una función `async` que recibe el `payload`. Si lanza, el trabajo se reintenta. El trabajo de CPU se ejecuta en un worker thread para que los demás bucles sigan avanzando mientras calcula.
+
+```js title="src/handlers.js"
+import { Worker } from 'node:worker_threads';
+import { setTimeout as sleep } from 'node:timers/promises';
+
+/** Ejecuta un archivo en un worker thread y devuelve lo que publique. */
+function runInWorker(file, workerData) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL(file, import.meta.url), { workerData });
+    worker.once('message', resolve);
+    worker.once('error', reject);
+  });
+}
+
+export const handlers = {
+  // E/S simulada: un servicio externo que a veces falla.
+  async email({ to, fail = false }) {
+    await sleep(100);
+    if (fail) throw new Error(`El servidor de correo rechazó el envío a ${to}`);
+    return { sentTo: to };
+  },
+
+  // CPU: fuera del hilo principal para no bloquear la cola.
+  async primes({ limit }) {
+    return { limit, count: await runInWorker('./primes.worker.js', { limit }) };
+  },
+};
+```
+
+```js title="src/primes.worker.js"
+import { parentPort, workerData } from 'node:worker_threads';
+
+// Trabajo de CPU de ejemplo: contar primos menores que `limit`.
+let count = 0;
+for (let n = 2; n < workerData.limit; n++) {
+  let prime = true;
+  for (let d = 2; d * d <= n; d++) {
+    if (n % d === 0) {
+      prime = false;
+      break;
+    }
+  }
+  if (prime) count++;
+}
+parentPort?.postMessage(count);
+```
+
+</Step>
+<Step title="Ponlo en marcha">
+
+```js title="src/index.js"
+import { handlers } from './handlers.js';
+import { createQueue } from './queue.js';
+import { createRunner } from './runner.js';
+
+const queue = createQueue(process.env.QUEUE_PATH ?? 'cola.db');
+console.log(`Recuperados ${queue.recover()} trabajos interrumpidos`);
+
+// Unos trabajos de ejemplo
+queue.enqueue('email', { to: 'ana@example.com' });
+queue.enqueue('email', { to: 'nadie@example.com', fail: true }, { maxAttempts: 3 });
+queue.enqueue('primes', { limit: 2_000_000 });
+queue.enqueue('email', { to: 'luis@example.com' }, { delayMs: 2000 });
+
+const runner = createRunner({ queue, handlers, concurrency: 2, pollMs: 200 });
+runner.start();
+
+const report = setInterval(() => console.log('Estado:', queue.stats()), 2000);
+
+process.once('SIGINT', async () => {
+  console.log('\nTerminando los trabajos en curso…');
+  clearInterval(report);
+  await runner.stop();
+  console.log('Estado final:', queue.stats());
+  queue.close();
+});
+```
+
+```bash
+npm start   # Ctrl+C para parar ordenadamente; vuelve a arrancar y verás que los datos siguen ahí
+```
+
+</Step>
+<Step title="Tests con un reloj falso">
+
+Gracias al `now` inyectado, probar «se reintenta dentro de 1 segundo» no requiere esperar un segundo.
+
+```js title="test/queue.test.js"
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { backoff, createQueue } from '../src/queue.js';
+import { createRunner } from '../src/runner.js';
+
+test('reclama por orden y respeta los retrasos', () => {
+  let time = 0;
+  const queue = createQueue(':memory:', { now: () => time });
+  const later = queue.enqueue('a', {}, { delayMs: 5000 });
+  const first = queue.enqueue('a', { n: 1 });
+
+  assert.equal(queue.claim().id, first);
+  assert.equal(queue.claim(), undefined); // el otro aún no está listo
+  time = 5000;
+  assert.equal(queue.claim().id, later);
+});
+
+test('reintenta con backoff exponencial y entierra al agotar intentos', () => {
+  let time = 0;
+  const queue = createQueue(':memory:', { now: () => time });
+  const id = queue.enqueue('a', {}, { maxAttempts: 2 });
+
+  queue.fail(queue.claim(), new Error('fallo 1'));
+  assert.equal(queue.get(id).run_at, backoff(1)); // 1000 ms después
+  assert.equal(queue.claim(), undefined);
+
+  time = backoff(1);
+  queue.fail(queue.claim(), new Error('fallo 2'));
+  assert.equal(queue.get(id).status, 'failed');
+  assert.equal(queue.get(id).last_error, 'fallo 2');
+});
+
+test('recupera los trabajos que quedaron a medias', () => {
+  const queue = createQueue();
+  queue.enqueue('a');
+  queue.claim(); // simulamos una caída con el trabajo en "running"
+  assert.equal(queue.recover(), 1);
+  assert.ok(queue.claim());
+});
+
+test('el runner procesa en paralelo y stop() espera a los trabajos en curso', async () => {
+  const queue = createQueue();
+  for (let i = 0; i < 4; i++) queue.enqueue('lento', { i });
+  let running = 0;
+  let max = 0;
+  const handlers = {
+    async lento() {
+      max = Math.max(max, ++running);
+      await new Promise((r) => setTimeout(r, 30));
+      running--;
+    },
+  };
+  const runner = createRunner({ queue, handlers, concurrency: 2, pollMs: 10, log: {} });
+  runner.start();
+  await new Promise((r) => setTimeout(r, 120));
+  await runner.stop();
+  assert.equal(max, 2);
+  assert.deepEqual(queue.stats(), { done: 4 });
+});
+```
+
+```console
+$ npm test
+✔ reclama por orden y respeta los retrasos
+✔ reintenta con backoff exponencial y entierra al agotar intentos
+✔ recupera los trabajos que quedaron a medias
+✔ el runner procesa en paralelo y stop() espera a los trabajos en curso
+ℹ pass 4
+```
+
+</Step>
+</Steps>
+
+<Callout type="info" title="¿Y en producción?">
+Esta cola funciona bien con un servidor y unos pocos miles de trabajos por minuto. Para varias máquinas o mucho volumen se usan colas sobre Redis (BullMQ) o servicios gestionados (SQS, Cloud Tasks). Los conceptos son exactamente los mismos: reclamación atómica, reintentos con backoff y ejecutores con parada ordenada.
+</Callout>
+
+## Propuestas de mejora
+
+<Checklist
+  items={[
+    'Jitter: añadir un azar a la espera para que mil trabajos fallidos no se reintenten a la vez.',
+    'Tiempo máximo por trabajo con AbortSignal.timeout pasado al handler.',
+    'Un pool de workers reutilizable en lugar de un Worker por trabajo.',
+    'Endpoint HTTP para encolar y consultar el estado (integrado en Monedero para enviar el informe anual por email).',
+    'Limpieza periódica de los trabajos terminados hace más de 30 días.',
+  ]}
+/>

@@ -1,0 +1,120 @@
+---
+title: Puesta en marcha del proyecto final
+sidebarTitle: Puesta en marcha
+description: Cómo ejecutar, probar y explorar el Monedero terminado que está en la carpeta proyecto/ del repositorio, con su estructura y sus scripts.
+difficulty: principiante
+time: 10
+related:
+  - monedero/hoja-de-ruta
+  - monedero/referencia-de-la-api
+keywords: ["instalar", "ejecutar", "scripts", "estructura", "proyecto final", "monedero", "npm run dev"]
+---
+
+## Arrancar en un minuto
+
+La carpeta `proyecto/` del repositorio contiene Monedero completo: el resultado de los 10 hitos.
+
+```bash
+cd proyecto
+npm install
+cp .env.example .env          # y pon un JWT_SECRET de 32 caracteres o más
+npm run dev                   # http://localhost:3000
+```
+
+```bash
+npm test                      # 37 tests de unidad e integración
+```
+
+Requiere **Node 22.18 o superior** (recomendado Node 26 LTS). En Node 22 verás un aviso `ExperimentalWarning` de SQLite: es esperado.
+
+## Scripts
+
+| Script | Qué hace | Hito |
+| --- | --- | --- |
+| `npm run dev` | Servidor con recarga al guardar y logs legibles | 4, 8 |
+| `npm start` | Servidor en modo normal | 4 |
+| `npm run start:cluster` | Un worker por núcleo | 9 |
+| `npm run start:secure` | Con el modelo de permisos de Node | 9 |
+| `npm run cli -- <comando>` | La CLI (`add`, `list`, `summary`, `import`, `export`) | 2, 3 |
+| `npm run migrate` | Aplica las migraciones sin arrancar el servidor | 6 |
+| `npm test` | Tests con `node:test` | 8 |
+| `npm run test:coverage` | Tests con informe de cobertura | 8 |
+| `npm run typecheck` | Comprobación de tipos con JSDoc | 8 |
+| `npm run audit:prod` | Vulnerabilidades en dependencias de producción | 7 |
+
+## Estructura
+
+```tree title="proyecto/"
+bin/
+  monedero.js # CLI (hitos 2-3)
+src/
+  server.js # entrada: config, BD, HTTP y apagado (hito 10)
+  cluster.js # varios procesos (hito 9)
+  app.js # composición de Express (hito 5)
+  config.js # entorno validado con Zod (hito 10)
+  health.js # /health y /ready (hito 9)
+  domain/expenses.js # reglas puras (hito 1)
+  lib/ # dinero, errores, validación, logs, contexto
+  db/ # conexión, transacciones y migraciones (hito 6)
+  expenses/ # schema → rutas → servicio → repositorio
+  users/ # contraseñas, JWT, registro y login (hito 7)
+  middleware/ # auth, límite, contexto, errores
+  csv/ # parser y generador con streams (hito 3)
+  reports/ # informe anual en un worker (hito 9)
+  events/sse.js # tiempo real (hito 9)
+public/ # página de estado (hito 4)
+test/ # node:test (hito 8)
+Dockerfile # imagen de producción (hito 10)
+```
+
+## Un paseo por la API
+
+```bash
+# 1. Crear una cuenta y guardar el token
+TOKEN=$(curl -s -X POST localhost:3000/api/auth/register \
+  -H 'content-type: application/json' \
+  -d '{"email":"ana@example.com","password":"contraseña-segura"}' | node -e "process.stdin.on('data', (d) => console.log(JSON.parse(d).token))")
+
+# 2. Registrar gastos
+curl -X POST localhost:3000/api/expenses -H "Authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' -d '{"amount":"12,50","category":"comida","description":"Almuerzo"}'
+
+# 3. Escuchar eventos en otra terminal
+curl -N localhost:3000/api/events -H "Authorization: Bearer $TOKEN"
+
+# 4. Resumen del mes e informe del año
+curl localhost:3000/api/expenses/summary -H "Authorization: Bearer $TOKEN"
+curl localhost:3000/api/reports/2026 -H "Authorization: Bearer $TOKEN"
+```
+
+Y con la CLI, sobre la misma base de datos:
+
+```bash
+npm run cli -- summary --user ana@example.com
+```
+
+## Los archivos centrales
+
+El punto de entrada, donde todo se conecta:
+
+<SourceFile path="src/server.js" />
+
+La composición de la aplicación:
+
+<SourceFile path="src/app.js" />
+
+El repositorio de gastos completo, con el filtrado por usuario:
+
+<SourceFile path="src/expenses/expenses.repository.js" />
+
+El servicio de gastos completo:
+
+<SourceFile path="src/expenses/expenses.service.js" />
+
+Las rutas de gastos completas:
+
+<SourceFile path="src/expenses/expenses.routes.js" />
+
+La CLI completa:
+
+<SourceFile path="bin/monedero.js" />
