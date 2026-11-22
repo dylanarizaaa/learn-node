@@ -1,0 +1,81 @@
+---
+title: Cómo funciona Node por dentro
+sidebarTitle: Cómo funciona Node
+description: V8, libuv, el event loop y el pool de hilos. El modelo mental que explica por qué Node atiende miles de conexiones con un solo hilo.
+difficulty: principiante
+time: 12
+prerequisites:
+  - introduccion/que-es-node
+related:
+  - nucleo/event-loop
+  - avanzado/event-loop-a-fondo
+resources:
+  - title: Node.js — El event loop, los timers y process.nextTick()
+    url: https://nodejs.org/en/learn/asynchronous-work/event-loop-timers-and-nexttick
+  - title: Node.js — No bloquees el event loop
+    url: https://nodejs.org/en/learn/asynchronous-work/dont-block-the-event-loop
+keywords: [v8, libuv, event loop, hilo, single thread, no bloqueante, thread pool]
+---
+
+## Las piezas
+
+Node une dos componentes principales:
+
+<Layers
+  layers={[
+    { title: 'Tu código', desc: 'JavaScript', items: ['index.js', 'npm packages'], tone: 'brand' },
+    { title: 'APIs de Node', desc: 'Módulos node:*', items: ['fs', 'http', 'crypto', 'stream', 'events'] },
+    { title: 'V8', desc: 'Motor de JavaScript', items: ['Compilación JIT', 'Memoria y GC'] },
+    { title: 'libuv', desc: 'E/S asíncrona', items: ['Event loop', 'Pool de hilos', 'Sockets', 'Timers'], tone: 'muted' },
+  ]}
+  caption="Tu código llama a las APIs de Node; V8 ejecuta el JavaScript y libuv habla con el sistema operativo."
+/>
+
+- **<Term slug="v8">V8</Term>** es el motor de Chrome: compila y ejecuta tu JavaScript.
+- **<Term slug="libuv">libuv</Term>** es una biblioteca en C que hace la entrada/salida (red, disco, temporizadores) de forma asíncrona y mantiene el **event loop**.
+
+## Un solo hilo para JavaScript
+
+Tu código JavaScript se ejecuta en **un único hilo**. Parece una limitación, pero es la clave del rendimiento de Node: cuando pides algo lento (leer un archivo, consultar una base de datos), Node **no espera**. Delega la operación al sistema operativo o al <Term slug="thread-pool">pool de hilos</Term> de libuv y sigue atendiendo otras cosas. Cuando el resultado está listo, el <Term slug="event-loop">event loop</Term> ejecuta tu callback.
+
+<Flow
+  steps={[
+    { title: 'Petición A', desc: 'pide datos a la BD' },
+    { title: 'Node delega', desc: 'y no espera', tone: 'brand' },
+    { title: 'Petición B', desc: 'se atiende mientras' },
+    { title: 'BD responde', desc: 'el event loop retoma A', tone: 'brand' },
+  ]}
+  caption="Con un solo hilo, Node intercala miles de peticiones que pasan la mayor parte del tiempo esperando."
+/>
+
+Compáralo con un restaurante: un camarero (el hilo) toma la comanda de una mesa, la pasa a la cocina (el sistema operativo) y atiende otra mesa en lugar de quedarse mirando cómo se cocina el plato.
+
+## Lo que sí bloquea
+
+El modelo funciona mientras cada trozo de JavaScript termine rápido. Si un callback se pone a **calcular** durante 2 segundos, nadie más es atendido durante esos 2 segundos:
+
+```js title="bloqueo.js"
+import { createServer } from 'node:http';
+
+createServer((req, res) => {
+  if (req.url === '/lento') {
+    const end = Date.now() + 2000;
+    while (Date.now() < end) {} // ⛔ bucle que acapara el único hilo
+  }
+  res.end('hola\n');
+}).listen(3000);
+```
+
+Si alguien pide `/lento`, cualquier otra petición a `/` tendrá que esperar. Los culpables típicos: bucles enormes, `JSON.parse` de archivos gigantes, expresiones regulares mal escritas y las funciones `*Sync` (`readFileSync`) dentro de un servidor.
+
+<Callout type="info" title="¿Y si necesito calcular?">
+Para trabajo de CPU existen los [worker threads](/docs/avanzado/worker-threads) (otros hilos con su propio event loop) y, para aprovechar varios núcleos, el [módulo cluster](/docs/avanzado/cluster). Los usarás en Monedero en el hito 9.
+</Callout>
+
+## Resumen
+
+- JavaScript corre en un hilo; la E/S ocurre en segundo plano.
+- El event loop ejecuta callbacks cuando sus operaciones terminan.
+- Bloquear el hilo con cálculo pesado bloquea a todos.
+
+En [El event loop](/docs/nucleo/event-loop) verás el orden exacto en que se ejecutan temporizadores, promesas y E/S.

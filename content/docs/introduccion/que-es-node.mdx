@@ -1,0 +1,76 @@
+---
+title: Qué es Node.js
+description: Un entorno para ejecutar JavaScript fuera del navegador, con acceso a archivos, red y procesos. Para qué sirve y para qué no.
+difficulty: principiante
+time: 8
+related:
+  - introduccion/como-funciona-node
+  - introduccion/mapa-del-ecosistema
+resources:
+  - title: Node.js — Introducción
+    url: https://nodejs.org/en/learn/getting-started/introduction-to-nodejs
+  - title: Node.js — Documentación de la API
+    url: https://nodejs.org/docs/latest/api/
+keywords: [node, runtime, entorno de ejecución, backend, servidor, javascript]
+---
+
+## La idea
+
+**Node.js** es un programa que ejecuta JavaScript en tu ordenador o en un servidor, igual que el navegador lo ejecuta dentro de una página. La diferencia está en lo que el código puede hacer: en el navegador puedes tocar el DOM; en Node puedes **leer archivos, abrir puertos de red, lanzar procesos y hablar con bases de datos**.
+
+No es un lenguaje ni un framework: es un *entorno de ejecución* (runtime). El lenguaje es el mismo JavaScript que ya conoces.
+
+<Overview
+  purpose="Construir servidores y APIs, herramientas de línea de comandos, scripts de automatización y procesos que mueven datos."
+  importance="Es la plataforma de backend más usada con JavaScript: un solo lenguaje para el navegador y el servidor, y el mayor registro de paquetes del mundo (npm)."
+  when="Cuando tu programa pasa la mayor parte del tiempo esperando: peticiones HTTP, consultas a base de datos, lectura de archivos, colas."
+  problem="Atender miles de conexiones simultáneas con un solo proceso, sin crear un hilo por cada una."
+/>
+
+## Navegador frente a Node
+
+<Columns>
+  <Column title="JavaScript en el navegador">
+    - `window`, `document`, el DOM
+    - `fetch`, `localStorage`, eventos de usuario
+    - Sin acceso al disco ni a otros procesos (por seguridad)
+  </Column>
+  <Column title="JavaScript en Node" tone="brand">
+    - `process`, `Buffer`, `import.meta`
+    - Módulos como `node:fs`, `node:http`, `node:crypto`
+    - Acceso completo a archivos, red y procesos
+  </Column>
+</Columns>
+
+Ambos comparten el lenguaje y muchas APIs web estándar: `fetch`, `URL`, `setTimeout`, `structuredClone`, `TextEncoder`, `AbortController`…
+
+## Ejemplo mínimo
+
+Este archivo lee su propio código y lo cuenta. Algo imposible en el navegador:
+
+```js title="contar.js"
+import { readFile } from 'node:fs/promises';
+
+const text = await readFile(import.meta.filename, 'utf8');
+console.log(`Este archivo tiene ${text.trim().split('\n').length} líneas`);
+```
+
+```console
+$ node contar.js
+Este archivo tiene 4 líneas
+```
+
+## Para qué es bueno (y para qué no)
+
+| Encaja muy bien | Encaja peor |
+| --- | --- |
+| APIs REST y GraphQL | Cálculo numérico intensivo (mejor Python/Rust, o workers) |
+| Tiempo real: chats, notificaciones | Procesado de vídeo o machine learning pesado |
+| CLIs y scripts de automatización | Programas que necesitan memoria compartida entre muchos hilos |
+| Backends para apps web y móviles | |
+
+La regla: Node brilla cuando el trabajo es **esperar** (red, disco, base de datos) y sufre cuando el trabajo es **calcular** durante mucho tiempo seguido. En [cómo funciona Node](/docs/introduccion/como-funciona-node) verás por qué.
+
+<Callout type="tip" title="Cómo leer esta guía">
+Cada lección es corta y termina con un bloque **Monedero** que aplica lo aprendido a un único proyecto que crece de principio a fin. Las dos primeras lecciones son conceptuales; el proyecto arranca en [El proyecto de la guía](/docs/introduccion/el-proyecto-de-la-guia).
+</Callout>

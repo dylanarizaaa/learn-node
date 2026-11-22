@@ -1,0 +1,85 @@
+---
+title: El proyecto de la guía
+description: Monedero, una API y CLI de gastos personales que construirás lección a lección. Qué hace, cómo crece y cómo usar los bloques «Aplícalo al proyecto».
+difficulty: principiante
+time: 8
+prerequisites:
+  - introduccion/que-es-node
+related:
+  - monedero/hoja-de-ruta
+  - monedero/referencia-de-la-api
+keywords: [monedero, proyecto guía, hitos, gastos, api, cli]
+milestone: 1
+---
+
+## Una idea pequeña que crece
+
+En lugar de mil ejemplos sueltos, toda la guía construye **un solo proyecto**: **Monedero**, una aplicación para registrar gastos personales. Empieza siendo una función de diez líneas y termina siendo una API lista para producción.
+
+```console
+$ monedero add 12,50 comida "Almuerzo"
+✔ Gasto #1: 12,50 US$ en comida
+$ monedero summary
+Resumen de 2026-11: 70,49 US$ en 4 gastos
+
+comida         12,50 US$  █████
+transporte      8,00 US$  ███
+hogar          40,00 US$  █████████████████
+ocio            9,99 US$  ████
+```
+
+Es un dominio sencillo de entender (todos tenemos gastos) pero con los problemas reales del backend: dinero sin errores de redondeo, fechas, validación, archivos grandes, usuarios, permisos, informes pesados y tiempo real.
+
+## Cómo crece: 10 hitos
+
+<Layers
+  layers={[
+    { title: 'Hitos 1–3', desc: 'JavaScript y núcleo', items: ['funciones puras', 'CLI', 'archivos JSON', 'streams CSV'], tone: 'brand' },
+    { title: 'Hitos 4–6', desc: 'API y datos', items: ['node:http', 'Express', 'Zod', 'SQLite'] },
+    { title: 'Hitos 7–8', desc: 'Seguridad y calidad', items: ['scrypt', 'JWT', 'node:test', 'pino'] },
+    { title: 'Hitos 9–10', desc: 'Avanzado y producción', items: ['SSE', 'workers', 'cluster', 'Docker', 'CI'], tone: 'muted' },
+  ]}
+/>
+
+La [hoja de ruta](/docs/monedero/hoja-de-ruta) muestra los 10 hitos con sus lecciones y tu progreso en cada uno.
+
+## Cómo leer cada lección
+
+Todas siguen el mismo patrón corto:
+
+1. **La idea**: el concepto en pocas líneas.
+2. **Ejemplo mínimo**: código que puedes copiar y ejecutar tal cual.
+3. **Errores comunes**: lo que suele salir mal.
+4. **Aplícalo al proyecto**: un bloque como este, que añade la pieza a Monedero.
+
+<ProjectStep files={['src/lib/money.js']}>
+
+Así se ven los pasos del proyecto. Indican el hito al que pertenecen y los archivos que vas a tocar. Cuando el bloque muestra un archivo con la ruta `proyecto/…`, el código se lee directamente del proyecto final del repositorio al compilar esta web: es exactamente el código que está probado.
+
+</ProjectStep>
+
+## El código final está en el repositorio
+
+La carpeta `proyecto/` del repositorio contiene Monedero terminado, con **37 tests** que pasan. Úsala como referencia cuando te atasques o para comparar tu versión:
+
+```tree title="proyecto/"
+bin/monedero.js # CLI
+src/
+  server.js # punto de entrada
+  app.js # composición de Express
+  domain/ # reglas puras
+  expenses/ # rutas → servicio → repositorio
+  users/ # contraseñas, JWT, login
+  db/migrations/ # SQL versionado
+test/ # node:test
+```
+
+<Callout type="info" title="Versiones intermedias">
+Algunos pasos muestran una versión **intermedia** de un archivo (por ejemplo, el almacenamiento en JSON del hito 2, que en el hito 6 se sustituye por SQLite). Es intencionado: así se aprende en la vida real, refactorizando. Los bloques que muestran código intermedio lo indican.
+</Callout>
+
+## Qué necesitas
+
+- Saber programar un poco (variables, condicionales, bucles) en cualquier lenguaje.
+- Un editor (VS Code es la opción más común) y una terminal.
+- Node.js 22.18 o superior; recomendado **Node 26 LTS**. Lo instalas en la [siguiente lección](/docs/introduccion/instalacion-y-versiones).

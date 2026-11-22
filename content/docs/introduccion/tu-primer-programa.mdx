@@ -1,0 +1,104 @@
+---
+title: Tu primer programa
+description: Ejecuta archivos con node, prueba código en el REPL, reinicia al guardar con --watch y crea el package.json del proyecto.
+difficulty: principiante
+time: 10
+prerequisites:
+  - introduccion/instalacion-y-versiones
+related:
+  - nucleo/modulos
+  - nucleo/npm-y-package-json
+resources:
+  - title: Node.js — Opciones de la línea de comandos
+    url: https://nodejs.org/docs/latest/api/cli.html
+  - title: Node.js — REPL
+    url: https://nodejs.org/docs/latest/api/repl.html
+keywords: [node archivo.js, repl, --watch, console.log, npm init, type module]
+milestone: 1
+---
+
+## La idea
+
+Un programa de Node es un archivo `.js`. Para ejecutarlo: `node archivo.js`. Eso es todo: no hay compilación ni configuración previa.
+
+```js title="hola.js"
+const name = process.argv[2] ?? 'mundo';
+console.log(`¡Hola, ${name}!`);
+```
+
+```console
+$ node hola.js
+¡Hola, mundo!
+$ node hola.js Ana
+¡Hola, Ana!
+```
+
+`process.argv` contiene los argumentos de la línea de comandos: `[ruta de node, ruta del archivo, ...tus argumentos]`.
+
+## Tres formas de ejecutar código
+
+<Columns cols={3}>
+  <Column title="Archivo">
+    `node hola.js` ejecuta el archivo y termina cuando no queda nada pendiente.
+  </Column>
+  <Column title="REPL">
+    `node` sin argumentos abre una consola interactiva (<Term slug="repl">REPL</Term>). Sal con `.exit` o Ctrl+D.
+  </Column>
+  <Column title="Una línea">
+    `node -e "console.log(2 ** 10)"` ejecuta el texto directamente. Útil en scripts.
+  </Column>
+</Columns>
+
+## Reiniciar al guardar
+
+Mientras desarrollas, `--watch` vuelve a ejecutar el programa cada vez que guardas un archivo que importa:
+
+```bash
+node --watch hola.js
+```
+
+## Errores comunes
+
+- `Cannot use import statement outside a module`: usas `import` en un proyecto sin `"type": "module"`. Lo arreglas en el paso de abajo.
+- `node: command not found`: la terminal no encuentra Node; revisa la [instalación](/docs/introduccion/instalacion-y-versiones).
+- Ejecutar el archivo desde otra carpeta: `node src/index.js` funciona desde la raíz del proyecto, no desde dentro de `src/`.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['package.json', 'src/index.js']}>
+
+Crea el `package.json` (el manifiesto del proyecto, lo verás a fondo en [npm y package.json](/docs/nucleo/npm-y-package-json)) y actívale los módulos ES:
+
+```bash
+npm init -y
+npm pkg set type=module
+```
+
+Escribe el primer archivo de Monedero. Por ahora solo representa un gasto como un objeto y lo muestra:
+
+```js title="src/index.js"
+const expense = {
+  amount: 1250, // céntimos: 12,50
+  category: 'comida',
+  description: 'Almuerzo',
+  date: '2026-11-22',
+};
+
+console.log('Monedero arrancando…');
+console.log(expense);
+```
+
+```console
+$ node --watch src/index.js
+Monedero arrancando…
+{
+  amount: 1250,
+  category: 'comida',
+  description: 'Almuerzo',
+  date: '2026-11-22'
+}
+```
+
+¿Por qué `1250` y no `12.5`? Es la primera decisión importante del proyecto y la explicamos en la siguiente lección.
+
+</ProjectStep>

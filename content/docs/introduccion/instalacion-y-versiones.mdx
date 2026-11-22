@@ -1,0 +1,84 @@
+---
+title: Instalación y versiones
+description: Instala Node con un gestor de versiones, entiende qué es una LTS y prepara la carpeta del proyecto.
+difficulty: principiante
+time: 10
+prerequisites:
+  - introduccion/el-proyecto-de-la-guia
+related:
+  - introduccion/tu-primer-programa
+  - nucleo/npm-y-package-json
+resources:
+  - title: Node.js — Descargas y gestores de versiones
+    url: https://nodejs.org/en/download
+  - title: Node.js — Calendario de versiones
+    url: https://nodejs.org/en/about/previous-releases
+  - title: fnm — Fast Node Manager
+    url: https://github.com/Schniz/fnm
+keywords: [instalar node, nvm, fnm, lts, versiones, nvmrc, npm, corepack]
+milestone: 1
+---
+
+## La idea
+
+Node publica una versión mayor nueva cada pocos meses, pero solo algunas reciben **soporte a largo plazo** (<Term slug="lts">LTS</Term>): unos 30 meses de parches de seguridad. Son las que se usan en producción.
+
+| Versión | Nombre | Estado (noviembre de 2026) |
+| --- | --- | --- |
+| **26** | Lithium | **LTS activa** — la recomendada |
+| 24 | Krypton | LTS en mantenimiento |
+| 22 | Jod | LTS en mantenimiento (fin en abril de 2027) |
+
+Esta guía usa Node 26. Todo el código funciona también desde Node **22.18**.
+
+## Instálalo con un gestor de versiones
+
+Cada proyecto puede necesitar una versión distinta. Un gestor de versiones te deja tener varias y cambiar con un comando. Recomendamos **fnm** (rápido, multiplataforma) o **nvm** (el clásico en macOS y Linux):
+
+```bash
+# macOS / Linux con fnm
+curl -fsSL https://fnm.vercel.app/install | bash
+fnm install 26
+fnm default 26
+
+# Windows (PowerShell)
+winget install Schniz.fnm
+fnm install 26
+```
+
+Comprueba la instalación:
+
+```console
+$ node --version
+v26.13.1
+$ npm --version
+11.20.0
+```
+
+<Callout type="warning" title="Evita sudo">
+Si instalas Node con el instalador del sistema y luego necesitas `sudo npm install -g`, acabarás con problemas de permisos. Con fnm o nvm todo vive en tu carpeta de usuario y nunca necesitas `sudo`.
+</Callout>
+
+## Errores comunes
+
+- **Usar una versión impar** (25, 27) en producción: son versiones *Current* con soporte corto. Úsalas solo para probar novedades.
+- **No fijar la versión del proyecto**: un compañero con Node 18 verá errores extraños. Fíjala con `.nvmrc` y con `engines` en `package.json`.
+- **Abrir una terminal antigua** tras instalar: cierra y vuelve a abrir para que se actualice el `PATH`.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['.nvmrc']}>
+
+Crea la carpeta de Monedero y fija la versión de Node. fnm y nvm leen `.nvmrc` y cambian de versión automáticamente al entrar en la carpeta (en fnm, con `--use-on-cd`).
+
+```bash
+mkdir monedero
+cd monedero
+echo "26" > .nvmrc
+fnm use        # o: nvm use
+git init
+```
+
+A partir de ahora, todos los comandos de la guía se ejecutan dentro de `monedero/`.
+
+</ProjectStep>

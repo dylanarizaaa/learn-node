@@ -1,0 +1,67 @@
+---
+title: Mapa del ecosistema
+description: Qué trae Node de serie, qué librerías merece la pena añadir y cuándo. Las decisiones técnicas de esta guía, explicadas.
+difficulty: principiante
+time: 10
+prerequisites:
+  - introduccion/que-es-node
+related:
+  - introduccion/el-proyecto-de-la-guia
+  - express/introduccion-a-express
+resources:
+  - title: Node.js — Módulos integrados
+    url: https://nodejs.org/docs/latest/api/
+  - title: npm — Registro de paquetes
+    url: https://www.npmjs.com/
+keywords: [ecosistema, librerías, frameworks, express, fastify, nestjs, bun, deno, decisiones]
+---
+
+## Primero, lo que ya viene incluido
+
+Node moderno trae de serie muchas cosas que hace unos años exigían instalar paquetes. Esta guía las usa siempre que basten:
+
+| Necesidad | Incluido en Node | Antes se instalaba |
+| --- | --- | --- |
+| Reiniciar al guardar | `node --watch` | nodemon |
+| Variables de entorno desde `.env` | `node --env-file=.env` | dotenv |
+| Tests, mocks y cobertura | `node:test`, `node --test` | Jest, Mocha, nyc |
+| Peticiones HTTP | `fetch` global | axios, node-fetch |
+| Leer argumentos de la CLI | `util.parseArgs` | yargs, commander |
+| Colores en la terminal | `util.styleText` | chalk |
+| Base de datos local | `node:sqlite` | better-sqlite3 |
+| Ejecutar TypeScript | *type stripping* | ts-node, tsx |
+| Hash de contraseñas | `crypto.scrypt` | bcrypt |
+
+## Después, librerías que aportan de verdad
+
+<Cards>
+  <Card href="/docs/express/introduccion-a-express" title="Express 5" description="Framework HTTP: routers, middleware y errores async. El más usado y documentado." />
+  <Card href="/docs/express/validacion-con-zod" title="Zod 4" description="Validación de datos con esquemas y mensajes en español." />
+  <Card href="/docs/seguridad/jwt" title="jose" description="JWT con algoritmos seguros, sin dependencias." />
+  <Card href="/docs/calidad/logging" title="pino" description="Logs estructurados en JSON, muy rápidos." />
+</Cards>
+
+## Alternativas que conviene conocer
+
+- **Fastify**: framework HTTP más rápido que Express y con validación por esquemas integrada. Lo que aprendas de Express se traslada casi directo.
+- **NestJS**: framework con arquitectura opinada (módulos, inyección de dependencias, decoradores). Útil en equipos grandes; aprende primero las bases.
+- **Hono**: framework ligero basado en APIs web estándar que funciona en Node, Bun, Deno y entornos *edge*.
+- **Prisma / Drizzle**: ORMs para PostgreSQL y otras bases de datos. Los verás en [PostgreSQL y ORMs](/docs/datos/postgresql-y-orms).
+- **Bun y Deno**: otros runtimes de JavaScript, compatibles en gran parte con Node. Node sigue siendo la opción estándar en producción.
+
+<Callout type="tip" title="Criterio de esta guía">
+Primero entender la pieza (por ejemplo, un servidor con `node:http`), después adoptar la herramienta que la simplifica (Express). Así sabrás qué hace la librería por ti y podrás depurarla cuando falle.
+</Callout>
+
+## El camino que seguirás
+
+<Flow
+  direction="vertical"
+  steps={[
+    { title: 'JavaScript y núcleo de Node', desc: 'Funciones puras, archivos, streams y una CLI' },
+    { title: 'HTTP', desc: 'Un servidor con node:http, sin frameworks', tone: 'brand' },
+    { title: 'Express + Zod + SQLite', desc: 'Una API REST con base de datos' },
+    { title: 'Seguridad y testing', desc: 'Usuarios, JWT, node:test' },
+    { title: 'Avanzado y producción', desc: 'Workers, cluster, tiempo real, Docker, CI', tone: 'brand' },
+  ]}
+/>

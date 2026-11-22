@@ -1,0 +1,77 @@
+---
+title: JavaScript moderno
+description: const y let, plantillas de texto, desestructuración, valores por defecto, ?? y ?. — la sintaxis que verás en todo el código de Node.
+difficulty: principiante
+time: 15
+prerequisites:
+  - introduccion/tu-primer-programa
+related:
+  - javascript/funciones-y-closures
+  - javascript/arrays-y-objetos
+resources:
+  - title: MDN — Guía de JavaScript
+    url: https://developer.mozilla.org/es/docs/Web/JavaScript/Guide
+  - title: MDN — Desestructuración
+    url: https://developer.mozilla.org/es/docs/Web/JavaScript/Reference/Operators/Destructuring
+keywords: [const, let, template literals, destructuring, desestructuración, nullish, optional chaining, regex, céntimos]
+milestone: 1
+---
+
+## La idea
+
+No necesitas conocer todo JavaScript para escribir Node, pero sí estas piezas, que aparecen en casi cada archivo:
+
+```js
+const PI = 3.14;            // const: no se puede reasignar (úsalo por defecto)
+let total = 0;              // let: cuando el valor cambia
+total += 10;
+
+const name = 'Ana';
+const greeting = `Hola, ${name}`;           // plantilla de texto con interpolación
+
+const [first, second = 'nada'] = ['a'];     // desestructuración de arrays, con valor por defecto
+const { amount, category } = { amount: 5, category: 'ocio' }; // de objetos
+
+const port = process.env.PORT ?? 3000;      // ??: usa 3000 solo si es null o undefined
+const city = user?.address?.city;           // ?.: undefined en vez de error si algo falta
+```
+
+<Callout type="warning" title="?? no es lo mismo que ||">
+`0 || 3000` da `3000` porque `0` es *falsy*. `0 ?? 3000` da `0`. Para valores por defecto casi siempre quieres `??`.
+</Callout>
+
+## El problema de los decimales
+
+Los números de JavaScript son de coma flotante binaria, y algunos decimales no se pueden representar exactamente:
+
+```console
+$ node -e "console.log(0.1 + 0.2)"
+0.30000000000000004
+```
+
+Para dinero eso es inaceptable. La solución estándar: **guardar enteros en la unidad más pequeña** (céntimos). `12,50` se guarda como `1250`; solo al mostrarlo se divide entre 100.
+
+## Errores comunes
+
+- Usar `var`: tiene reglas de ámbito confusas. Usa `const` y, si hace falta, `let`.
+- Comparar con `==`: `'1' == 1` es `true`. Usa siempre `===`.
+- Olvidar que `const` no congela objetos: `const a = {}; a.x = 1` es válido. Para congelar, `Object.freeze`.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/lib/money.js']}>
+
+Crea la primera pieza real de Monedero: convertir lo que escribe una persona (`"12,50"`, `"12.5"`, `12.5`) en céntimos. Usa una expresión regular para validar, desestructuración con valor por defecto para separar euros y céntimos, y `padEnd` para que `"5"` cuente como `50` céntimos:
+
+<SourceFile path="src/lib/money.js" lines="1-26" />
+
+Pruébala desde la terminal con `node -e` (el `formatCents` del final del archivo lo verás en la siguiente lección):
+
+```console
+$ node -e "import('./src/lib/money.js').then(({ toCents }) => console.log(toCents('12,5'), toCents(3)))"
+1250 300
+$ node -e "import('./src/lib/money.js').then(({ toCents }) => console.log(toCents('0.1') + toCents('0.2')))"
+30
+```
+
+</ProjectStep>
