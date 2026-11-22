@@ -53,7 +53,7 @@ export async function HeroShowcase() {
       </div>
 
       <div
-        className="w-full max-w-md overflow-hidden rounded-2xl border border-white/10 bg-zinc-950 font-mono text-[11.5px] leading-relaxed text-zinc-300 shadow-2xl lg:absolute lg:top-40 lg:-right-6 lg:w-[23rem]"
+        className="w-full max-w-md overflow-hidden rounded-2xl border border-white/10 bg-zinc-950 font-mono text-[11.5px] leading-relaxed text-zinc-300 shadow-2xl lg:absolute lg:-right-6 lg:-bottom-20 lg:w-[23rem]"
         role="img"
         aria-label="Terminal: una petición a la API de Monedero con curl y la salida de los tests"
       >

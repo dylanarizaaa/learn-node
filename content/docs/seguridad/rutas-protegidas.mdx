@@ -67,21 +67,21 @@ app.use('/api/expenses', requireAuth, expensesRouter({ expenses })); // [!code +
 
 Ahora el cambio más importante del hito: **cada gasto pertenece a un usuario**. El repositorio recibe `userId` y lo incluye en todas las consultas:
 
-```js title="src/expenses/expenses.repository.js"
-const insert = db.prepare(`
-  INSERT INTO expenses (amount, category, description, date) // [!code --]
-  VALUES (:amount, :category, :description, :date) // [!code --]
-  INSERT INTO expenses (user_id, amount, category, description, date) // [!code ++]
-  VALUES (:userId, :amount, :category, :description, :date) // [!code ++]
-  RETURNING ${COLUMNS}`);
-const findById = db.prepare(`SELECT ${COLUMNS} FROM expenses WHERE id = :id`); // [!code --]
-const findById = db.prepare(`SELECT ${COLUMNS} FROM expenses WHERE id = :id AND user_id = :userId`); // [!code ++]
+```diff title="src/expenses/expenses.repository.js"
+ const insert = db.prepare(`
+-  INSERT INTO expenses (amount, category, description, date)
+-  VALUES (:amount, :category, :description, :date)
++  INSERT INTO expenses (user_id, amount, category, description, date)
++  VALUES (:userId, :amount, :category, :description, :date)
+   RETURNING ${COLUMNS}`);
+-const findById = db.prepare(`SELECT ${COLUMNS} FROM expenses WHERE id = :id`);
++const findById = db.prepare(`SELECT ${COLUMNS} FROM expenses WHERE id = :id AND user_id = :userId`);
 
-function where({ userId, from, to, category }) {
-  const conditions = ['1 = 1']; // [!code --]
-  const params = {}; // [!code --]
-  const conditions = ['user_id = :userId']; // [!code ++]
-  const params = { userId }; // [!code ++]
+ function where({ userId, from, to, category }) {
+-  const conditions = ['1 = 1'];
+-  const params = {};
++  const conditions = ['user_id = :userId'];
++  const params = { userId };
 ```
 
 Lo mismo en `update`, `remove`, `totalsByCategory` y `createMany` (el archivo final completo está en [Puesta en marcha](/docs/monedero/puesta-en-marcha)). El servicio pasa el usuario a todas sus funciones:

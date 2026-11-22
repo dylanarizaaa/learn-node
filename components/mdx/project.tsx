@@ -137,7 +137,7 @@ export function Endpoint({
 }) {
   return (
     <div className="flex flex-col gap-1.5 bg-card px-4 py-3 sm:flex-row sm:items-start sm:gap-4">
-      <div className="flex shrink-0 items-center gap-2 sm:w-72">
+      <div className="flex shrink-0 items-center gap-2 sm:w-80">
         <span
           className={cn(
             'w-16 rounded-md border px-1.5 py-0.5 text-center font-mono text-[0.7rem] font-semibold',
