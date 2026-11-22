@@ -1,0 +1,76 @@
+---
+title: Configuración validada
+description: Toda la configuración desde variables de entorno, validada con Zod al arrancar, tipada y en un único objeto que se pasa al resto de la aplicación.
+difficulty: intermedio
+time: 12
+prerequisites:
+  - nucleo/variables-de-entorno
+  - express/validacion-con-zod
+related:
+  - produccion/docker
+  - produccion/despliegue
+resources:
+  - title: The Twelve-Factor App — Configuración
+    url: https://12factor.net/es/config
+  - title: Node.js — Variables de entorno
+    url: https://nodejs.org/docs/latest/api/environment_variables.html
+keywords: ["configuración", "config", "process.env", "zod", "fail fast", "secretos", "node_env", "twelve factor", ".env.example"]
+milestone: 10
+---
+
+## La idea
+
+Una aplicación lista para producción lee **toda** su configuración del entorno (puerto, base de datos, secretos, nivel de logs) y la **valida al arrancar**. Si falta un secreto o un número no es un número, mejor descubrirlo en el primer segundo del despliegue que a las 3 de la madrugada, cuando una petición concreta lo necesite.
+
+<Columns>
+  <Column title="process.env por todas partes" tone="bad">
+    `Number(process.env.PORT)` aquí, `process.env.JWT_SECRET ?? 'secreto'` allá. Sin validar, con valores por defecto inseguros y difícil de probar.
+  </Column>
+  <Column title="Un objeto config validado" tone="good">
+    Se lee y valida una vez en el punto de entrada. El resto de la aplicación recibe un objeto tipado e inmutable.
+  </Column>
+</Columns>
+
+## Principios
+
+- **Falla pronto y claro**: lista todos los problemas a la vez, con el nombre de la variable.
+- **Valores por defecto solo si son seguros**: un puerto, sí; un secreto, nunca.
+- **Convierte los tipos** (`'3000'` → `3000`) en la frontera, como cualquier otra entrada externa.
+- **`NODE_ENV`** decide comportamientos (logs bonitos, mensajes de error), pero no lo uses para elegir *datos* (URLs, claves): eso va en su propia variable.
+- **Los secretos** vienen del entorno de la plataforma (o de un gestor de secretos), nunca de archivos en el repositorio.
+
+## Errores comunes
+
+- Validar la configuración «cuando se use»: el error aparece tarde y en un sitio inesperado.
+- Exportar `process.env` reetiquetado sin validar: solo cambias el nombre del problema.
+- Imprimir la configuración completa en los logs al arrancar: incluye secretos.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/config.js', '.env.example', 'src/server.js']}>
+
+Empieza el hito 10 reuniendo toda la configuración de Monedero en un schema de Zod. Los `process.env` sueltos que fuiste añadiendo (puerto, ruta de la base de datos, secreto JWT, nivel de logs) pasan a estar aquí:
+
+<SourceFile path="src/config.js" />
+
+El `.env.example` documenta cada variable:
+
+<SourceFile path=".env.example" />
+
+El punto de entrada es el único lugar que lee el entorno; después, todo recibe `config`:
+
+<SourceFile path="src/server.js" lines="9-19" />
+
+Con una configuración incorrecta, Monedero no llega a arrancar y dice exactamente qué falta:
+
+```console
+$ JWT_SECRET=corto PORT=abc node src/server.js
+Error: Configuración no válida:
+  - PORT: Entrada inválida: se esperaba número, recibido NaN
+  - JWT_SECRET: JWT_SECRET debe tener al menos 32 caracteres
+¿Creaste el archivo .env a partir de .env.example?
+```
+
+En los tests, `createApp` recibe un objeto `TEST_CONFIG` escrito a mano: no hace falta tocar variables de entorno.
+
+</ProjectStep>

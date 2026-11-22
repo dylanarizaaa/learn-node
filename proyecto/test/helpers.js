@@ -13,6 +13,7 @@ export const TEST_CONFIG = Object.freeze({
   JWT_EXPIRES_IN: '5m',
   LOG_LEVEL: 'silent',
   CURRENCY: 'USD',
+  TRUST_PROXY: 0,
 });
 
 let userCounter = 0;

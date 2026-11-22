@@ -10,6 +10,8 @@ const schema = z.object({
   JWT_EXPIRES_IN: z.string().default('2h'),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   CURRENCY: z.string().length(3).default('USD'),
+  // Número de proxies de confianza delante de la app (0 = ninguno). Ver «Despliegue».
+  TRUST_PROXY: z.coerce.number().int().min(0).default(0),
 });
 
 /** @typedef {z.infer<typeof schema>} Config */

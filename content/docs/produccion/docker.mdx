@@ -1,0 +1,71 @@
+---
+title: Docker
+description: Empaquetar una app de Node en una imagen — capas y caché, dependencias de producción, usuario sin privilegios, volúmenes para datos y healthcheck.
+difficulty: avanzado
+time: 18
+prerequisites:
+  - produccion/apagado-ordenado
+related:
+  - produccion/despliegue
+  - produccion/ci-cd
+resources:
+  - title: Docker — Imágenes oficiales de Node.js
+    url: https://hub.docker.com/_/node
+  - title: Docker — Buenas prácticas para Dockerfile
+    url: https://docs.docker.com/build/building/best-practices/
+  - title: Node.js — Docker best practices
+    url: https://github.com/nodejs/docker-node/blob/main/docs/BestPractices.md
+keywords: ["docker", "dockerfile", "imagen", "contenedor", "capas", "npm ci", "omit=dev", "usuario node", "volumen", "healthcheck", "dockerignore", "slim", "alpine"]
+milestone: 10
+---
+
+## La idea
+
+Una **imagen** de <Term slug="docker">Docker</Term> empaqueta tu aplicación con el sistema y la versión exacta de Node que necesita. Un **contenedor** es esa imagen en ejecución. Así, lo que pruebas en tu máquina es lo mismo que corre en CI y en producción.
+
+Un `Dockerfile` es una receta por pasos. Cada instrucción crea una **capa** que Docker cachea: si nada de lo que usa una capa ha cambiado, la reutiliza.
+
+## Buenas prácticas para Node
+
+1. **Imagen base oficial y fija**: `node:26-slim` (Debian reducido). `alpine` es más pequeña, pero usa otra libc y a veces da problemas con módulos nativos.
+2. **Copia primero `package.json` y el lockfile**, instala, y después copia el código. Cambiar un archivo `.js` no invalida la capa de `npm ci`: el build tarda segundos.
+3. **`npm ci --omit=dev`**: instalación exacta y sin dependencias de desarrollo.
+4. **`.dockerignore`**: que `node_modules`, `.env` y los datos locales no entren en la imagen.
+5. **Usuario sin privilegios**: la imagen oficial trae el usuario `node`. Si alguien explota tu app, no será root dentro del contenedor.
+6. **`CMD ["node", …]`** en forma de array y sin npm: Node recibe SIGTERM directamente.
+7. **Los datos fuera de la imagen**: un **volumen** para la base de datos SQLite. El contenedor se puede destruir y recrear; los datos no.
+
+## Errores comunes
+
+- `COPY . .` antes de `npm ci`: cada cambio de código reinstala todas las dependencias.
+- Copiar tu `node_modules` local: puede traer binarios compilados para otro sistema.
+- Guardar la base de datos dentro del contenedor sin volumen: desaparece en el siguiente despliegue.
+- Secretos en el Dockerfile (`ENV JWT_SECRET=…`): quedan grabados en la imagen. Pásalos al ejecutar.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['Dockerfile', '.dockerignore']}>
+
+El Dockerfile de Monedero aplica todas las prácticas anteriores, y añade un `HEALTHCHECK` que usa el `fetch` de Node (la imagen *slim* no trae `curl`) contra el endpoint de salud del hito 9:
+
+<SourceFile path="Dockerfile" />
+
+<SourceFile path=".dockerignore" />
+
+Construye y ejecuta. El secreto se pasa al arrancar y los datos van a un volumen con nombre:
+
+```bash
+docker build -t monedero .
+docker run --rm -p 3000:3000 \
+  -e JWT_SECRET="$(node -e "console.log(crypto.randomBytes(32).toString('base64url'))")" \
+  -v monedero-data:/app/data \
+  monedero
+```
+
+Con `docker ps` verás el estado de salud del contenedor (`healthy` tras el primer chequeo), y `docker stop` envía SIGTERM: en los logs aparecerá el «Cerrando el servidor…» de la lección anterior.
+
+<Callout type="tip" title="Un proceso por contenedor">
+Dentro de Docker, arranca `src/server.js`, no `src/cluster.js`: para usar más núcleos, ejecuta más contenedores y deja que la plataforma reparta el tráfico (y comparte estado con Redis, como viste en [Cluster](/docs/avanzado/cluster)).
+</Callout>
+
+</ProjectStep>

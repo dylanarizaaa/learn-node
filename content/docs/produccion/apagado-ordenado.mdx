@@ -1,0 +1,71 @@
+---
+title: Apagado ordenado
+description: Responder a SIGTERM y SIGINT terminando las peticiones en curso, cerrando conexiones largas y recursos, con un tiempo máximo de seguridad.
+difficulty: avanzado
+time: 12
+prerequisites:
+  - avanzado/tiempo-real
+  - produccion/configuracion
+related:
+  - produccion/docker
+  - avanzado/cluster
+resources:
+  - title: Node.js — Eventos de señal
+    url: https://nodejs.org/docs/latest/api/process.html#signal-events
+  - title: Node.js — server.close()
+    url: https://nodejs.org/docs/latest/api/http.html#serverclosecallback
+keywords: ["graceful shutdown", "apagado ordenado", "sigterm", "sigint", "server.close", "closeidleconnections", "despliegue sin cortes", "uncaughtexception"]
+milestone: 10
+---
+
+## La idea
+
+En cada despliegue, la plataforma (Docker, Kubernetes, systemd, tu PaaS) envía **SIGTERM** al proceso antiguo y, si no termina en unos segundos, lo mata con SIGKILL. Si tu servidor simplemente muere, las peticiones a medias fallan y una escritura puede quedarse a medio hacer. El <Term slug="graceful-shutdown">apagado ordenado</Term>:
+
+<Flow
+  steps={[
+    { title: 'SIGTERM', desc: 'o Ctrl+C (SIGINT)', tone: 'muted' },
+    { title: 'Dejar de aceptar', desc: 'server.close()' },
+    { title: 'Terminar lo en curso', desc: 'y cerrar conexiones largas' },
+    { title: 'Cerrar recursos', desc: 'base de datos, colas' },
+    { title: 'Salir', desc: 'código 0', tone: 'brand' },
+  ]}
+/>
+
+## Las piezas en Node
+
+- `process.once('SIGTERM', handler)`: escuchar la señal (una vez: una segunda señal no debe reiniciar el proceso de cierre).
+- `server.close(callback)`: deja de aceptar conexiones y llama al callback cuando se cierran las que hay.
+- `server.closeIdleConnections()`: cierra las conexiones *keep-alive* que no están atendiendo ninguna petición (si no, `close` las esperaría).
+- Las conexiones **largas** (SSE, WebSocket) nunca terminan solas: avisa a quien las gestiona para que las cierre.
+- Un **temporizador de seguridad** con `unref()`: si algo se queda colgado, sal igualmente.
+
+## Errores excepcionales
+
+Un error que nadie capturó (`uncaughtException`) deja el proceso en un estado desconocido. Lo correcto es **registrarlo y salir** con código distinto de 0; el orquestador arrancará un proceso limpio. Intentar «seguir como si nada» lleva a errores más raros después.
+
+## Errores comunes
+
+- Arrancar con `npm start` en Docker: npm no siempre reenvía las señales al proceso de Node. Usa `CMD ["node", "src/server.js"]`.
+- Llamar a `process.exit()` nada más recibir la señal: cortas las peticiones en curso.
+- Olvidar cerrar la base de datos: en SQLite, el archivo WAL queda sin integrar hasta el siguiente arranque.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/server.js']}>
+
+Añade el apagado ordenado al final de `server.js`. El evento `shutdown` cierra las conexiones SSE del hito 9 (cada handler escucha `events.once('shutdown', …)`):
+
+<SourceFile path="src/server.js" lines="31-64" />
+
+```console
+$ npm start
+{"level":30,…,"msg":"Monedero escuchando en http://localhost:3000 (pid 1033)"}
+^C
+{"level":30,…,"signal":"SIGINT","msg":"Cerrando el servidor…"}
+{"level":30,…,"msg":"Servidor cerrado"}
+```
+
+Los tests usan la misma idea en `close()` del ayudante: emiten `shutdown`, cierran el servidor y la base de datos. Si alguna vez un test «no termina», casi siempre es una conexión o un temporizador que nadie cerró.
+
+</ProjectStep>

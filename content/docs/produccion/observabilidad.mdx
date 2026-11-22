@@ -1,0 +1,78 @@
+---
+title: Observabilidad
+description: Saber qué pasa en producción — logs, métricas y trazas; endpoints de liveness y readiness; qué medir y cuándo alertar.
+difficulty: avanzado
+time: 15
+prerequisites:
+  - calidad/logging
+  - avanzado/async-local-storage
+related:
+  - produccion/despliegue
+  - avanzado/rendimiento
+resources:
+  - title: OpenTelemetry para Node.js
+    url: https://opentelemetry.io/docs/languages/js/getting-started/nodejs/
+  - title: Google SRE — Monitoring distributed systems (las cuatro señales doradas)
+    url: https://sre.google/sre-book/monitoring-distributed-systems/
+keywords: ["observabilidad", "monitorización", "logs", "métricas", "trazas", "opentelemetry", "health check", "liveness", "readiness", "prometheus", "alertas", "slo"]
+milestone: 10
+---
+
+## Los tres pilares
+
+| Señal | Responde a | En Node |
+| --- | --- | --- |
+| **Logs** | ¿Qué pasó en esta petición? | pino en JSON, con `requestId` |
+| **Métricas** | ¿Cómo va el sistema en conjunto? | Contadores e histogramas (`prom-client`, OpenTelemetry) |
+| **Trazas** | ¿Dónde se fue el tiempo en esta petición, servicio a servicio? | OpenTelemetry (usa AsyncLocalStorage por debajo) |
+
+## Qué medir: las cuatro señales doradas
+
+1. **Latencia**: cuánto tardan las peticiones (por percentiles, separando las que fallan).
+2. **Tráfico**: peticiones por segundo.
+3. **Errores**: proporción de respuestas 5xx.
+4. **Saturación**: cuánto queda de capacidad. En Node, el **retraso del event loop** y la memoria son los mejores indicadores.
+
+Alerta por **síntomas** que sufren los usuarios (errores y latencia altos durante varios minutos), no por cada causa posible (un pico de CPU de 10 segundos).
+
+## Liveness y readiness
+
+Las plataformas preguntan periódicamente a tu app por su estado. Son dos preguntas distintas:
+
+- **Liveness** (`/health`): ¿el proceso responde? Si falla varias veces, la plataforma **reinicia** el contenedor.
+- **Readiness** (`/ready`): ¿puede atender tráfico ahora (base de datos accesible, arranque terminado)? Si falla, la plataforma **deja de enviarle** peticiones, sin reiniciarlo.
+
+Mantén el *liveness* simple: si depende de la base de datos y esta cae, la plataforma reiniciará en bucle todos tus contenedores sin arreglar nada.
+
+## Errores comunes
+
+- Logs sin un identificador común entre líneas de la misma petición: imposible reconstruir qué pasó.
+- Métricas con etiquetas de cardinalidad alta (el id de usuario como etiqueta): disparan el coste y la memoria.
+- Un health check que hace trabajo pesado: lo llaman cada pocos segundos.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/health.js', 'Dockerfile']}>
+
+Monedero ya tiene lo esencial; repásalo con la lista de arriba:
+
+- **Logs**: JSON con pino, una línea por petición con método, ruta, estado y duración, y un `requestId` que se propaga a todas las capas con AsyncLocalStorage.
+- **Liveness**: `/api/health`, sin dependencias, con versión, memoria y retraso del event loop.
+- **Readiness**: `/api/ready`, que comprueba la base de datos.
+
+<SourceFile path="src/health.js" lines="37-56" />
+
+El `HEALTHCHECK` del Dockerfile usa el de liveness. En Kubernetes, cada endpoint iría a su sonda:
+
+```yaml title="deployment.yaml (fragmento)"
+livenessProbe:
+  httpGet: { path: /api/health, port: 3000 }
+  periodSeconds: 10
+readinessProbe:
+  httpGet: { path: /api/ready, port: 3000 }
+  periodSeconds: 5
+```
+
+El siguiente paso natural son las métricas: un contador de peticiones por ruta y código, y un histograma de latencias, expuestos en `/metrics` para Prometheus o enviados con OpenTelemetry. Es uno de los [retos](/docs/monedero/retos).
+
+</ProjectStep>

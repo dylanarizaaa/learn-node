@@ -1,0 +1,99 @@
+---
+title: Despliegue
+description: Dónde y cómo ejecutar una app de Node en producción — PaaS, contenedores o un servidor propio con systemd y un proxy inverso con HTTPS — y qué revisar antes.
+difficulty: avanzado
+time: 15
+prerequisites:
+  - produccion/docker
+related:
+  - produccion/observabilidad
+  - seguridad/limitar-peticiones
+resources:
+  - title: Express — Buenas prácticas de rendimiento en producción
+    url: https://expressjs.com/en/advanced/best-practice-performance.html
+  - title: Express — Detrás de un proxy
+    url: https://expressjs.com/en/guide/behind-proxies.html
+  - title: Caddy — Reverse proxy
+    url: https://caddyserver.com/docs/quick-starts/reverse-proxy
+keywords: ["despliegue", "deploy", "producción", "paas", "vps", "systemd", "caddy", "nginx", "https", "trust proxy", "copias de seguridad", "vacuum into"]
+milestone: 10
+---
+
+## Tres caminos
+
+| Opción | Tú gestionas | Ejemplos | Encaja con |
+| --- | --- | --- | --- |
+| PaaS | Solo la app | Render, Railway, Fly.io, Heroku | Empezar rápido, equipos pequeños |
+| Contenedores gestionados | La imagen y su configuración | Cloud Run, ECS, Kubernetes | Varias instancias, escalado automático |
+| Servidor propio (VPS) | Todo: sistema, proxy, actualizaciones | Cualquier proveedor de VPS | Control total y coste fijo |
+
+Con SQLite, Monedero necesita **disco persistente**: elige una plataforma con volúmenes y **una sola instancia** (o migra a PostgreSQL para varias).
+
+## Proxy inverso y HTTPS
+
+En producción, Node casi nunca recibe las conexiones directamente. Delante hay un **proxy inverso** (Caddy, Nginx o el balanceador de tu plataforma) que termina HTTPS, comprime y reenvía a tu app en `localhost`. Caddy obtiene y renueva los certificados automáticamente:
+
+```text title="Caddyfile"
+monedero.example.com {
+  reverse_proxy localhost:3000
+}
+```
+
+Detrás de un proxy, todas las peticiones parecen venir de su IP. Express puede leer la IP real de la cabecera `X-Forwarded-For`, pero **solo debe hacerlo si confías en el proxy**; si no, cualquiera falsifica su IP enviando esa cabecera.
+
+## Lista antes de desplegar
+
+- `NODE_ENV=production` (Express y otras librerías se optimizan).
+- Secretos en el entorno de la plataforma, no en archivos.
+- Migraciones aplicadas al arrancar (o en un paso previo del despliegue).
+- Apagado ordenado y health checks configurados.
+- **Copias de seguridad** de la base de datos, y probar a restaurarlas.
+- Logs en JSON recogidos en algún sitio donde se puedan buscar.
+
+## Errores comunes
+
+- Exponer el puerto de Node directamente a Internet sin HTTPS.
+- `trust proxy` activado sin proxy delante (o desactivado con proxy: el límite de peticiones bloquea a todos a la vez, porque todos «son» la IP del proxy).
+- Copiar el archivo SQLite «en caliente» con `cp` mientras la app escribe: la copia puede quedar inconsistente.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['src/config.js', 'src/app.js', 'monedero.service']}>
+
+Monedero ya lee `TRUST_PROXY` en su configuración: es el número de proxies de confianza delante de la app. Con uno (Caddy o el balanceador de la plataforma), `TRUST_PROXY=1`, y `createApp` lo aplica:
+
+<SourceFile path="src/app.js" lines="39-43" />
+
+Para un VPS sin contenedores, un servicio de systemd arranca Monedero al iniciar la máquina, lo reinicia si cae y le envía SIGTERM al pararlo:
+
+```ini title="/etc/systemd/system/monedero.service"
+[Unit]
+Description=Monedero API
+After=network.target
+
+[Service]
+User=monedero
+WorkingDirectory=/opt/monedero
+EnvironmentFile=/opt/monedero/.env
+ExecStart=/usr/bin/node src/server.js
+Restart=on-failure
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable --now monedero
+journalctl -u monedero -f      # logs en directo
+```
+
+Y una copia de seguridad consistente de SQLite, aunque la app esté escribiendo:
+
+```bash
+node -e "new (require('node:sqlite').DatabaseSync)('data/monedero.db').exec(\"VACUUM INTO 'backups/monedero-$(date +%F).db'\")"
+```
+
+`VACUUM INTO` crea una copia compacta y coherente en un archivo nuevo (la carpeta `backups/` debe existir). Prográmala con cron o un temporizador de systemd y guárdala fuera de la máquina.
+
+</ProjectStep>

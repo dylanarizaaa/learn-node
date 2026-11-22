@@ -1,0 +1,112 @@
+---
+title: Integración y despliegue continuos
+description: Un flujo de GitHub Actions que instala, comprueba tipos, ejecuta los tests en varias versiones de Node, audita dependencias y construye la imagen en cada cambio.
+difficulty: avanzado
+time: 15
+prerequisites:
+  - produccion/docker
+  - calidad/cobertura
+related:
+  - calidad/tipos-con-typescript
+  - seguridad/seguridad-de-apis
+resources:
+  - title: GitHub Actions — Node.js
+    url: https://docs.github.com/es/actions/use-cases-and-examples/building-and-testing/building-and-testing-nodejs
+  - title: actions/setup-node
+    url: https://github.com/actions/setup-node
+  - title: GitHub — Dependabot
+    url: https://docs.github.com/es/code-security/dependabot
+keywords: ["ci", "cd", "github actions", "workflow", "matrix", "setup-node", "npm ci", "dependabot", "pipeline", "despliegue continuo"]
+milestone: 10
+---
+
+## La idea
+
+La <Term slug="ci-cd">integración continua</Term> (CI) ejecuta automáticamente las comprobaciones en cada *push* y en cada *pull request*: nada entra en la rama principal sin pasar los tests. El **despliegue continuo** (CD) da el siguiente paso: si todo pasa en `main`, construye y despliega.
+
+<Flow
+  steps={[
+    { title: 'git push', tone: 'muted' },
+    { title: 'npm ci', desc: 'instalación exacta' },
+    { title: 'Tipos y tests', desc: 'en Node 22, 24 y 26' },
+    { title: 'Auditoría', desc: 'npm audit' },
+    { title: 'Imagen Docker', desc: 'y despliegue', tone: 'brand' },
+  ]}
+/>
+
+## Ideas clave
+
+- **`npm ci`**, no `npm install`: respeta el lockfile al pie de la letra y falla si no coincide con `package.json`.
+- **Matriz de versiones**: si declaras `"engines": { "node": ">=22.18" }`, prueba en todas las LTS que soportas.
+- **Caché de npm** (`cache: npm` en `setup-node`): las instalaciones pasan de minutos a segundos.
+- **Rápido primero**: tipos y tests antes que la imagen Docker; si fallan, no gastes tiempo en lo demás.
+- **Rama protegida**: en la configuración del repositorio, exige que la CI pase antes de fusionar.
+
+## Mantener las dependencias al día
+
+Dependabot (o Renovate) abre *pull requests* con las actualizaciones; tu CI las prueba. Actualizar poco y a menudo es mucho más fácil que saltar tres versiones mayores de golpe.
+
+```yaml title=".github/dependabot.yml"
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      dependencias:
+        update-types: [minor, patch]
+```
+
+## Errores comunes
+
+- Tests que dependen de tu máquina (rutas absolutas, una base de datos local, la zona horaria): en CI fallan. Los de Monedero usan SQLite en memoria y fechas fijas.
+- Secretos en el workflow: usa los *secrets* del repositorio (`${{ secrets.NOMBRE }}`), que GitHub oculta en los logs.
+- Ignorar una CI en rojo «porque es un test inestable»: arréglalo o elimínalo; una CI en la que nadie confía no protege nada.
+
+## Aplícalo al proyecto
+
+<ProjectStep files={['.github/workflows/ci.yml']}>
+
+Crea el workflow. En tu repositorio de Monedero (donde el proyecto está en la raíz), sería así:
+
+```yaml title=".github/workflows/ci.yml"
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Tests (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run audit:prod
+
+  docker:
+    name: Imagen Docker
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: docker build -t monedero .
+```
+
+El repositorio de esta guía usa un workflow equivalente (con `working-directory: proyecto`) que además valida y compila la documentación. Para el **despliegue**, añade un job con `if: github.ref == 'refs/heads/main'` que publique la imagen en un registro (GitHub Container Registry, por ejemplo) y avise a tu plataforma; cada proveedor tiene su acción o su webhook.
+
+**Hito 10 completo, y con él, Monedero.** Has llevado una función que convierte «12,50» en céntimos hasta una API con usuarios, base de datos, tests, tiempo real, workers y despliegue automatizado. Repasa el camino en la [hoja de ruta](/docs/monedero/hoja-de-ruta) y sigue con los [retos](/docs/monedero/retos).
+
+</ProjectStep>

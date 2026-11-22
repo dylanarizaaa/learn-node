@@ -38,6 +38,8 @@ export function createApp({ config, db, logger, events = new EventEmitter() }) {
 
   // 2. Middleware global (el orden importa)
   const app = express();
+  // Detrás de un proxy inverso, req.ip debe salir de X-Forwarded-For (y solo si confiamos en él).
+  if (config.TRUST_PROXY > 0) app.set('trust proxy', config.TRUST_PROXY);
   app.use(helmet());
   app.use(requestContextMiddleware(logger));
   app.use(express.json({ limit: '100kb' }));
